@@ -1,0 +1,95 @@
+---
+title: "Data driven definition of ecosystems in South Australia"
+author:
+- Department for Environment and Water
+date: "`r format(Sys.time(), '%A, %d %B, %Y')`"
+output:
+  bookdown::gitbook:
+    split_by: chapter
+    toc_depth: 4
+    keep_md: no
+    fig_caption: TRUE
+csl:                          "common/BibStyle.csl"
+bibliography:                 ["common/refs.bib","common/packageCitations.bib"]
+link-citations: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, code = readLines("0010_setup.R")}
+```
+
+
+---
+
+# Appendix
+
+## Code
+
+Code used to generate this document.
+
+### Setup
+
+```{r setupCode, code = readLines("0010_Setup.R"), echo = TRUE, eval = FALSE}
+```
+
+### Main document
+
+```{r, code = readLines(knitr::purl(knitr::current_input(),documentation=1)), echo = TRUE, eval = FALSE}
+
+# From
+# https://github.com/yihui/knitr/issues/332
+# https://stackoverflow.com/questions/36868287/purl-within-knit-duplicate-label-error
+
+```
+
+## Session information
+
+### R packages attached
+
+```{r packages}
+
+  kable(tibble(package = read_lines("common/packageCitations.bib")) %>%
+          dplyr::filter(grepl("@",package)
+                        , !grepl("CiteR",package)
+          ) %>%
+          dplyr::mutate(package = gsub("@Manual\\{|,|R-","",package)) %>%
+          dplyr::arrange() %>%
+          dplyr::mutate(citation = paste0("@R-",package)) %>%
+          dplyr::left_join(as_tibble(session_info()$packages)) %>%
+          dplyr::select(package,citation,loadedversion,date,source)
+        , caption = "R [@R-base] packages used in the production of this report" 
+        ) %>%
+    kable_styling() %>%
+    kableExtra::scroll_box(width = "100%")
+
+```
+
+### Other packages required
+
+Packages required but not explicitly attached are listed in table \@ref(tab:sessionInfoPackages). Explicitly attached packages are given in Table \@ref(tab:packages).
+
+```{r sessionInfoPackages}
+  
+  as_tibble(session_info()$packages) %>%
+    dplyr::filter(!attached) %>%
+    dplyr::select(package,loadedversion,base=is_base,date,source) %>%
+    kable(caption = "@R-base packages required to produce this report but not explicitly attached") %>%
+    kable_styling() %>%
+    kableExtra::scroll_box(width = "100%")
+  
+```
+
+### Platform
+
+```{r sessionInfoPlatform}
+  
+  session_info()$platform %>%
+    tibble::enframe(name = "setting", value = "value") %>%
+    tidyr::unnest() %>%
+    kable() %>%
+    kable_styling()
+  
+```
+
+# References
