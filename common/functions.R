@@ -1,4 +1,138 @@
 
+# Unscale scaled data
+unscale_data <- function(scaledData) {
+  
+  scaledData*attr(scaledData,"scaled:scale")+attr(scaledData,"scaled:center")
+  
+}
+
+
+# From https://github.com/mtennekes/tmap/issues/255 - who got it from:
+#http://stackoverflow.com/questions/20241065/r-barplot-wrapping-long-text-labels
+
+# Core wrapping function
+  wrap.it <- function(x, len) { 
+    
+    sapply(x, function(y) paste(strwrap(y, len), 
+                                collapse = "\n"), 
+           USE.NAMES = FALSE)
+  }
+
+# Call this function with a list or vector
+  wrap.labels <- function(x, len) {
+    
+    if (is.list(x))
+    {
+      lapply(x, wrap.it, len)
+    } else {
+      wrap.it(x, len)
+    }
+  }
+
+
+
+# From https://gist.github.com/danlwarren/271288d5bab45d2da549
+
+# Function to rarefy point data in any number of dimensions.  The goal here is to 
+# take a large data set and reduce it in size in such a way as to approximately maximize the 
+# difference between points.  For instance, if you have 2000 points but suspect a lot of 
+# spatial autocorrelation between them, you can pass in your data frame, the names (or indices)
+# of the lat/lon columns, and the number 200, and you get back 200 points from your original data 
+# set that are chosen to be as different from each other as possible given a randomly chosen
+# starting point
+
+# Input is:
+#
+# x, a data frame containing the columns to be used to calculate distances along with whatever other data you need
+# cols, a vector of column names or indices to use for calculating distances
+# npoints, the number of rarefied points to spit out
+#
+# e.g., thin.max(my.data, c("latitude", "longitude"), 200)
+  
+  
+  thin_max <- function(x, cols, npoints){
+    #Create empty vector for output
+    inds <- vector(mode="numeric")
+    
+    #Create distance matrix
+    this.dist <- as.matrix(dist(x[,cols], upper=TRUE))
+    
+    #Draw first index at random
+    inds <- c(inds, as.integer(runif(1, 1, length(this.dist[,1]))))
+    
+    #Get second index from maximally distant point from first one
+    #Necessary because apply needs at least two columns or it'll barf
+    #in the next bit
+    inds <- c(inds, which.max(this.dist[,inds]))
+    
+    while(length(inds) < npoints){
+      #For each point, find its distance to the closest point that's already been selected
+      min.dists <- apply(this.dist[,inds], 1, min)
+      
+      #Select the point that is furthest from everything we've already selected
+      this.ind <- which.max(min.dists)
+      
+      #Get rid of ties, if they exist
+      if(length(this.ind) > 1){
+        print("Breaking tie...")
+        this.ind <- this.ind[1]
+      }
+      inds <- c(inds, this.ind)
+    }
+    
+    return(x[inds,])
+  }
+
+# A function to run random forest over a df with first column 'cluster' and other columns explanatory
+
+  rf_mod <- function(envClust, clustCol, envCols, idCol, outFile, saveModel = FALSE, saveImp = FALSE, ...){
+    
+    idCol <- if(is.numeric(idCol)) names(envClust)[idCol] else idCol
+    
+    clustCol <- if(is.numeric(clustCol)) names(envClust)[clustCol] else clustCol
+    
+    envCols <- if(is.numeric(envCols)) names(envClust)[envCols] else envCols
+    
+    rfMod <- randomForest::randomForest(x = envClust[envClust$train,which(names(envClust) %in% c(envCols))]
+                                        , y = envClust[envClust$train,which(names(envClust) %in% c(clustCol))] %>% dplyr::pull(!!ensym(clustCol))
+                                        , ntree = 500
+                                        , importance = TRUE
+                                        )
+    
+    rfPred <- envClust[!envClust$train,c(idCol,clustCol)] %>%
+      dplyr::bind_cols(predict(rfMod
+                               , newdata = envClust[!envClust$train,which(names(envClust) %in% c(clustCol,envCols))]
+                               ) %>%
+                         tibble::enframe(name = NULL, value = "predCluster")
+                       ) %>%
+      dplyr::bind_cols(predict(rfMod
+                               , newdata = envClust[!envClust$train,which(names(envClust) %in% c(clustCol,envCols))]
+                               , type = "prob"
+                               ) %>%
+                         as_tibble()
+                       )
+    
+    readr::write_rds(rfPred,outFile)
+    
+    if(saveImp) {readr::write_rds(as_tibble(rfMod$importance, rownames = "att"),gsub("_rfPred","_rfImp",outFile))}
+    
+    if(saveModel) {readr::write_rds(rfMod,gsub("_rfPred","",outFile))}
+    
+  }
+
+
+# A function to run random forest using tidymodels dialogue
+  
+  run_rf <- function(datTrain,modRecipe) {
+    
+    randomForest::randomForest(as.formula(modRecipe)
+                               , data = datTrain
+                               , ntree = 500
+                               )
+    
+  }
+    
+    
 # Function to get data out of 32 bit MS Access from 64 bit R
 # see https://stackoverflow.com/questions/13070706/how-to-connect-r-with-access-database-in-64-bit-window
 
