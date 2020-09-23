@@ -1,5 +1,5 @@
 ---
-title: "Data driven definition of ecosystems in South Australia"
+title: "Awesome rmarkdown report"
 author:
 - Department for Environment and Water
 date: "`r format(Sys.time(), '%A, %d %B, %Y')`"
@@ -16,7 +16,10 @@ editor_options:
   chunk_output_type: console
 ---
 
-```{r setup, code = readLines("0010_setup.R")}
+```{r setup}
+
+  source("0010_setup.R")
+
 ```
 
 
@@ -49,19 +52,12 @@ Code used to generate this document.
 
 ```{r packages}
 
-  kable(tibble(package = read_lines("common/packageCitations.bib")) %>%
-          dplyr::filter(grepl("@",package)
-                        , !grepl("CiteR",package)
-          ) %>%
-          dplyr::mutate(package = gsub("@Manual\\{|,|R-","",package)) %>%
-          dplyr::arrange() %>%
+  kable(tibble(package = packages) %>%
           dplyr::mutate(citation = paste0("@R-",package)) %>%
-          dplyr::left_join(as_tibble(session_info()$packages)) %>%
+          dplyr::left_join(as_tibble(package_info(include_base = TRUE))) %>%
           dplyr::select(package,citation,loadedversion,date,source)
         , caption = "R [@R-base] packages used in the production of this report" 
-        ) %>%
-    kable_styling() %>%
-    kableExtra::scroll_box(width = "100%")
+        )
 
 ```
 
@@ -71,12 +67,10 @@ Packages required but not explicitly attached are listed in table \@ref(tab:sess
 
 ```{r sessionInfoPackages}
   
-  as_tibble(session_info()$packages) %>%
+  as_tibble(package_info()) %>%
     dplyr::filter(!attached) %>%
-    dplyr::select(package,loadedversion,base=is_base,date,source) %>%
-    kable(caption = "@R-base packages required to produce this report but not explicitly attached") %>%
-    kable_styling() %>%
-    kableExtra::scroll_box(width = "100%")
+    dplyr::select(package,loadedversion,date,source) %>%
+    kable(caption = "@R-base packages required to produce this report but not explicitly attached")
   
 ```
 
@@ -86,10 +80,8 @@ Packages required but not explicitly attached are listed in table \@ref(tab:sess
   
   session_info()$platform %>%
     tibble::enframe(name = "setting", value = "value") %>%
-    tidyr::unnest() %>%
-    kable() %>%
-    kable_styling()
-  
+    tidyr::unnest(cols = c(value))
+
 ```
 
 # References
