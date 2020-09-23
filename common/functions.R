@@ -1,4 +1,73 @@
 
+  # Git add.
+  gitadd <- function(dir = getwd()){
+    cmd_list <- list(
+      cmd1 = tolower(substr(dir,1,2)),
+      cmd2 = paste("cd",dir),
+      cmd3 = "git add --all"
+    )
+    cmd <- paste(unlist(cmd_list),collapse = " & ")
+    shell(cmd)
+  }
+  
+  # Git commit.
+  gitcommit <- function(msg = "commit from Rstudio", dir = getwd()){
+    cmd = sprintf("git commit -m\"%s\"",msg)
+    shell(cmd)
+  }
+  
+  # Git push.
+  gitpush <- function(dir = getwd()){
+    cmd_list <- list(
+      cmd1 = tolower(substr(dir,1,2)),
+      cmd2 = paste("cd",dir),
+      cmd3 = "git push"
+    )
+    cmd <- paste(unlist(cmd_list),collapse = " & ")
+    shell(cmd)
+  }
+
+
+# Site a package in rmarkdown
+  # assumes these have been run and that 'packages' contains all packages to cite
+    # knnitr::write_bib(packages,"packageCitations.bib")
+    # refs <- bib2df::bib2df("packageCitations.bib")
+
+  cite_package <- function(package,brack = TRUE,startText = "", endText = "") {
+    
+    thisRef <- refs %>%
+      dplyr::filter(grepl(paste0("-",package),BIBTEXKEY) | grepl(paste0("^",package),BIBTEXKEY)) %>%
+      dplyr::pull(BIBTEXKEY)
+    
+    starts <- if(brack) paste0("[",startText,"@") else paste0(startText,"@")
+    ends <- if(brack) paste0(endText,"]") else endText
+    
+    if(length(thisRef) > 1) {
+      
+      paste0(starts,paste0(thisRef,collapse = "; @"),ends)
+      
+    } else {
+      
+      paste0(starts,"R-",package,ends)
+      
+    }
+    
+  }
+
+
+# Are the values within a column unique
+  col_is_unique <- function(df,col = "SiteID") {
+    
+    notUnique <- df %>%
+      dplyr::select(grep("^n$",names(.),value = TRUE,invert = TRUE)) %>%
+      dplyr::count(!!ensym(col)) %>%
+      dplyr::filter(n > 1)
+    
+    print(paste0("there are ",nrow(notUnique)," ",col,"(s) that are not unique: ",dplyr::pull(notUnique[,1])))
+    
+  }
+
+
 # Unscale scaled data
 unscale_data <- function(scaledData) {
   
@@ -85,7 +154,16 @@ unscale_data <- function(scaledData) {
 
 # A function to run random forest over a df with first column 'cluster' and other columns explanatory
 
-  rf_mod <- function(envClust, clustCol, envCols, idCol, outFile, saveModel = FALSE, saveImp = FALSE, ...){
+  rf_mod_fold <- function(envClust
+                     , clustCol = "cluster"
+                     , envCols = names(patchesEnvSelect)[-1]
+                     , idCol = "SiteID"
+                     , doFolds = folds
+                     , outFile
+                     , saveModel = FALSE
+                     , saveImp = FALSE
+                     , ...
+                     ){
     
     idCol <- if(is.numeric(idCol)) names(envClust)[idCol] else idCol
     
@@ -93,30 +171,116 @@ unscale_data <- function(scaledData) {
     
     envCols <- if(is.numeric(envCols)) names(envClust)[envCols] else envCols
     
-    rfMod <- randomForest::randomForest(x = envClust[envClust$train,which(names(envClust) %in% c(envCols))]
-                                        , y = envClust[envClust$train,which(names(envClust) %in% c(clustCol))] %>% dplyr::pull(!!ensym(clustCol))
+    envClust <- envClust %>%
+      dplyr::mutate(fold = sample(1:doFolds,nrow(.),replace=TRUE,rep(1/doFolds,doFolds)))
+    
+    folds <- 1:doFolds
+    
+    fold_rf_mod <- function(fold) {
+      
+      outFile <- gsub("_conf",paste0("_fold",fold,"_conf"),outFile)
+      
+      if(!file.exists(outFile)) {
+        
+        if(doFolds > 1) {
+          
+          train <- envClust[envClust$fold != fold,which(names(envClust) %in% c(clustCol,envCols))] %>%
+            dplyr::mutate(cluster = factor(cluster))
+          
+          test <- envClust[envClust$fold == fold,which(names(envClust) %in% c(idCol,clustCol,envCols))] %>%
+            dplyr::mutate(cluster = factor(cluster, levels = levels(train$cluster)))
+          
+          rfMod <- randomForest(x = train[,envCols]
+                                , y = train[,clustCol] %>% dplyr::pull(!!ensym(clustCol))
+                                , ntree = 500
+                                , importance = saveImp
+                                )
+        
+          rfPred <- test %>%
+            dplyr::select(!!ensym(idCol),!!ensym(clustCol)) %>%
+            dplyr::bind_cols(predict(rfMod
+                                     , newdata = test[,envCols]
+                                     ) %>%
+                               tibble::enframe(name = NULL, value = "predCluster")
+                             ) %>%
+            dplyr::bind_cols(predict(rfMod
+                                     , newdata = test[,envCols]
+                                     , type = "prob"
+                                     ) %>%
+                               as_tibble()
+                             )
+          
+        } else {
+          
+          rfMod <- randomForest::randomForest(x = envClust[,which(names(envClust) %in% c(envCols))]
+                                              , y = envClust %>% dplyr::pull(!!ensym(clustCol))
+                                              , ntree = 500
+                                              , importance = saveImp
+                                              )
+          
+          rfPred <- envClust[,c(idCol,clustCol)] %>%
+            dplyr::bind_cols(predict(rfMod) %>%
+                               tibble::enframe(name = NULL, value = "predCluster")
+                             ) %>%
+            dplyr::bind_cols(predict(rfMod
+                                     , type = "prob"
+                                     ) %>%
+                               as_tibble()
+                             )
+          
+        }
+        
+        feather::write_feather(rfPred,outFile)
+        
+        if(saveImp) {feather::write_feather(as_tibble(rfMod$importance, rownames = "att"),gsub("_rfPred","_rfImp",outFile))}
+        
+        if(saveModel) {feather::write_feather(rfMod,gsub("_rfPred","",outFile))}
+        
+      }
+      
+    }
+    
+    map(folds,fold_rf_mod)
+    
+    }
+  
+  rf_mod <- function(envClust
+                          , clustCol
+                          , envCols
+                          , idCol
+                          , outFile
+                          , saveModel = FALSE
+                          , saveImp = FALSE
+                          , ...
+                     ){
+    
+    idCol <- if(is.numeric(idCol)) names(envClust)[idCol] else idCol
+    
+    clustCol <- if(is.numeric(clustCol)) names(envClust)[clustCol] else clustCol
+    
+    envCols <- if(is.numeric(envCols)) names(envClust)[envCols] else envCols
+    
+    rfMod <- randomForest::randomForest(x = envClust[,which(names(envClust) %in% c(envCols))]
+                                        , y = envClust %>% dplyr::pull(!!ensym(clustCol))
                                         , ntree = 500
-                                        , importance = TRUE
+                                        , importance = saveImp
                                         )
     
-    rfPred <- envClust[!envClust$train,c(idCol,clustCol)] %>%
-      dplyr::bind_cols(predict(rfMod
-                               , newdata = envClust[!envClust$train,which(names(envClust) %in% c(clustCol,envCols))]
-                               ) %>%
+    rfPred <- envClust[,c(idCol,clustCol)] %>%
+      dplyr::bind_cols(predict(rfMod) %>%
                          tibble::enframe(name = NULL, value = "predCluster")
                        ) %>%
       dplyr::bind_cols(predict(rfMod
-                               , newdata = envClust[!envClust$train,which(names(envClust) %in% c(clustCol,envCols))]
                                , type = "prob"
                                ) %>%
                          as_tibble()
                        )
     
-    readr::write_rds(rfPred,outFile)
+    feather::write_feather(rfPred,outFile)
     
-    if(saveImp) {readr::write_rds(as_tibble(rfMod$importance, rownames = "att"),gsub("_rfPred","_rfImp",outFile))}
+    if(saveImp) {feather::write_feather(as_tibble(rfMod$importance, rownames = "att"),gsub("_rfPred","_rfImp",outFile))}
     
-    if(saveModel) {readr::write_rds(rfMod,gsub("_rfPred","",outFile))}
+    if(saveModel) {feather::write_feather(rfMod,gsub("_rfPred","",outFile))}
     
   }
 
@@ -601,7 +765,7 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
   
 
 # turn a vector into a comma separated list of values with a penultimate 'and'
-  vec_to_sentence <- function(x,sep=",") {
+  vec_to_sentence <- function(x,sep=",",end="and") {
     
     x[!is.na(x)] %>%
       paste(collapse = "JOINSRUS") %>%
@@ -612,7 +776,7 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
         
       } else {
         
-        stringi::stri_replace_last_regex(x,"JOINSRUS", " and ") %>%
+        stringi::stri_replace_last_regex(x,"JOINSRUS",paste0(" ",end," ")) %>%
           str_replace_all("JOINSRUS",paste0(sep," "))
         
       }
@@ -671,7 +835,8 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
     suffixes <- c("thousand", "million", "billion", "trillion")
     if (length(x) > 1) return(trim(sapply(x, helper)))
     res <- helper(x)
-    gsub(" ","",res)
+    #res <- gsub(" ","",res)
+    return(res)
   }
   
 

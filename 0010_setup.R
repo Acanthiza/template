@@ -1,42 +1,19 @@
 
-#------Options-------
-
-  # Project name
-  project <- basename(here::here())
 
 #-----Packages-----
 
   packages <- unique(c("base"
                        ,"knitr"
                        ,"bookdown"
-                       ,"readr"
-                       ,"readxl"
-                       ,"dplyr"
-                       ,"tidyr"
-                       ,"purrr"
-                       ,"furrr"
-                       ,"tibble"
-                       ,"stringr"
-                       ,"forcats"
-                       ,"ggplot2"
-                       ,"lubridate"
-                       ,"dbplyr"
-                       ,"DBI"
                        ,"fs"
-                       ,"sf"
-                       ,"raster"
-                       ,"ggrepel"
-                       ,"gridExtra"
-                       ,"DT"
-                       ,"tmap"
-                       ,"maptools"
-                       ,"kableExtra"
+                       ,"sessioninfo"
+                       ,"tidyverse"
                        )
                      )
   
   purrr::walk(packages,library,character.only=TRUE)  
   
-  write_bib(packages,file="common/packageCitations.bib",tweak=TRUE)
+  write_bib(packages,file="packageCitations.bib",tweak=TRUE)
 
 
 #------Chunk options-------
@@ -48,6 +25,7 @@
                         , message = FALSE
                         , tidy = TRUE
                         , tidy.opts = list(comment = FALSE)
+                        , fig.width = 7
                         )
   
   options(knitr.kable.NA = ""
@@ -57,16 +35,16 @@
 
 #------Mapping-----
 
-  # Set mapping defaults
-  tmap::tmap_options(basemaps = c("OpenStreetMap.Mapnik"
-                                  , "Esri.WorldImagery"
-                                  )
-                     )
-  
-  tmap::tmap_mode("view")
-  
-  # don't use scientific notation for numbers
-  options(scipen = 999)
+  # # Set mapping defaults
+  # tmap_options(basemaps = c("OpenStreetMap.Mapnik"
+  #                                 , "Esri.WorldImagery"
+  #                                 )
+  #                    )
+  # 
+  # tmap_mode("view")
+  # 
+  # # don't use scientific notation for numbers
+  # options(scipen = 999)
 
 
 #------Project------
@@ -76,18 +54,16 @@
   repoLink <- path(dirname(repo),"blob","master",basename(repo))
   
   reportLink <- path(repoLink
-                       , list.files(here::here(),pattern="Rmd") %>% grep("^_",.,invert=TRUE,value=TRUE)
+                       , list.files(pattern="Rmd") %>% grep("^_",.,invert=TRUE,value=TRUE)
                        )
 
 #---------Parallel-----------
 
-# Cores to use for any parallel processing
-useCores <- parallel::detectCores()*3/4
-
-# Plan for any furrr functions
-plan(multiprocess
-     , workers = 
-       useCores
-     #round(parallel::detectCores()*0.5,0)
-     , gc = TRUE
-)
+  # # Cores to use for any parallel processing
+  # useCores <- if(parallel::detectCores() > 20) 20 else parallel::detectCores()-1
+  # 
+  # # Plan for any furrr functions
+  # plan(multiprocess
+  #      , workers = useCores
+  #      , gc = TRUE
+  #      )
