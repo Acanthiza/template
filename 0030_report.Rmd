@@ -1,6 +1,9 @@
 ---
 title: "Awesome rmarkdown report"
+<<<<<<< HEAD
 subtitle: "`r as.character(git2r::last_commit()$summary)`"
+=======
+>>>>>>> 2b0de5662c276592e236605fd9b79d32b7011f57
 author:
 - Department for Environment and Water
 date: "`r format(Sys.time(), '%A, %d %B, %Y')`"
