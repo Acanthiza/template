@@ -53,6 +53,39 @@
     }
     
   }
+  
+# make package bibliography, including tweaks for known package issues.
+  fix_package_bib <- function(bibFile) {
+    
+    inRefs <- bib2df::bib2df(bibFile)
+    
+    namesInRefs <- colnames(inRefs)
+    
+    refs <- bib2df::bib2df(bibFile) %>%
+      dplyr::mutate(package = gsub("R-|\\d{4}","",BIBTEXKEY)) %>%
+      tidytext::unnest_tokens("titleWords"
+                              ,TITLE
+                              ,token = "regex"
+                              ,pattern = " "
+                              ,to_lower = FALSE
+                              #,strip_punct = FALSE
+                              ,collapse = FALSE
+                              ) %>%
+      dplyr::mutate(isCap = grepl(paste0(LETTERS,collapse="|"),titleWords)
+                    , titleWords = if_else(isCap,paste0("{",titleWords,"}"),titleWords)
+                    ) %>%
+      tidyr::nest(data = c(titleWords,isCap)) %>%
+      dplyr::mutate(TITLE = map_chr(data,. %>% dplyr::pull(titleWords) %>% paste0(collapse = " "))
+                    , TITLE = map2_chr(package,TITLE,~gsub(.x,paste0("{",.x,"}"),.y))
+                    , AUTHOR = map(AUTHOR,~gsub("Microsoft Corporation","{Microsoft Corporation}",.))
+                    , AUTHOR = map(AUTHOR,~gsub("Fortran original by |R port by ","",.))
+                    , AUTHOR = map(AUTHOR, ~gsub("with contributions by","and",.))
+                    ) %>%
+      dplyr::select(any_of(namesInRefs))
+    
+    bib2df::df2bib(refs,bibFile)
+    
+  }
 
 
 # Are the values within a column unique
