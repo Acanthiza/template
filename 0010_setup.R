@@ -16,6 +16,23 @@
   write_bib(packages,file="packageCitations.bib",tweak=TRUE)
 
 
+  
+#-------Load functions-------
+  
+  commonFiles <- path("..","template","toCommon")
+  
+  if(file.exists(commonFiles)){
+    
+    files <- dir_ls(commonFiles)
+    newFiles <- files %>% gsub(commonFiles,path("common"),.)
+    dir_create("common")
+    walk2(files,newFiles,file_copy,overwrite=TRUE)
+    
+  }
+  
+  source("common/functions.R") # these are generic functions (e.g. vec_to_sentence)
+  
+
 #------Chunk options-------
   # Set default chunk options (can adjust individual chunks differently if required)
 
