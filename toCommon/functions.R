@@ -1,4 +1,265 @@
 
+#------Clustering---------
+
+  # Make a cluster data frame
+  make_cluster_df <- function(rawClusters,siteIDsDf) {
+    
+    siteIDsDf %>%
+      dplyr::mutate(id = row_number()) %>%
+      dplyr::bind_cols(rawClusters %>%
+                         dplyr::mutate(cluster = numbers2words(clust)
+                                       , cluster = fct_reorder(cluster,clust)
+                                       )
+                       )
+    
+  }
+  
+
+  cluster_summarise <- function(df,groupName="clust",smallestCluster = minAbsSites) {
+    
+    clust <- df %>% dplyr::select(all_of(groupName))
+    
+    tab <- table(clust)
+    
+    tibble(nSites = nrow(clust)
+           , nClusters = length(tab)
+           , minClustSize = min(tab)
+           , avClustSize = mean(tab)
+           , maxClustSize = max(tab)
+           , nClustersMinAbsSites = sum(tab >= smallestCluster)
+           , nSitesClustersMinAbsSites = sum(tab[tab >= smallestCluster])
+           , propClustersMin = nClustersMinAbsSites/nClusters
+           , propSitesClustersMin = nSitesClustersMinAbsSites/nSites
+    )
+    
+  }
+  
+  make_sil <- function(clustDf, distObj = datDist, clustID = "clust"){
+    
+    clustCol <- if(is.character(clustID)) which(names(clustDf)==clustID) else siteID
+    
+    silhouette(dplyr::pull(clustDf,clustCol),distObj)
+    
+  }
+  
+  # Turn an object of class silhouette into a data frame with one row per site
+  make_sil_df <- function(clustDf,silObj) {
+    
+    clustDf %>%
+      dplyr::bind_cols(tibble(neighbour = silObj[,2],sil_width = silObj[,3]))
+    
+  }
+  
+  # Calculate the within clusters sum of squares using only the floristic distances (datDist)
+  calc_SS <- function(clustDf,clustDfMin,dist = datDist) {
+    
+    if(!exists("sqDist")) sqDist <- as.matrix(dist^2)
+    
+    clustDf %>%
+      dplyr::mutate(id = row_number()) %>%
+      dplyr::inner_join(clustDfMin) %>%
+      dplyr::group_by(cluster) %>%
+      tidyr::nest() %>%
+      dplyr::ungroup() %>%
+      #dplyr::sample_n(2) %>% # TESTING
+      dplyr::mutate(wss = map_dbl(data
+                                  , ~sum(sqDist[.$id,.$id])/(2*nrow(.))
+                                  )
+                    ) %>%
+      dplyr::select(-data)
+    
+  }
+  
+  
+#-------Clustering - Indval--------
+  
+  cluster_indval <- function(clustDf,dfWithNames = datWide){
+    
+    # clustDf is usually siteID, clust, cluster
+    # datWide is usually siteID * spp
+    
+    datForInd <- clustDf %>%
+      dplyr::inner_join(dfWithNames) %>%
+      .[,colSums(. != 0) > 0]
+    
+    labdsv::indval(datForInd[,names(datForInd) %in% names(datWide[,-1])]
+                   ,datForInd$clust
+                   )
+    
+  }
+  
+  
+  # Indval result
+  cluster_indval_df <- function(clustInd,clustDf){
+    
+    tibble(Taxa = names(clustInd$maxcls)
+           , clust = clustInd$maxcls
+           , indval = clustInd$indcls
+           , pval = clustInd$pval
+           ) %>%
+      dplyr::inner_join(clustInd$relabu %>%
+                          as_tibble(rownames = "Taxa") %>%
+                          tidyr::gather(clust,abu,names(.)[names(.) %in% unique(clustDf$clust)]) %>%
+                          dplyr::mutate(clust = as.numeric(clust)) %>%
+                          dplyr::filter(abu > 0)
+                       ) %>%
+      dplyr::inner_join(clustInd$relfrq %>%
+                         as_tibble(rownames = "Taxa") %>%
+                         tidyr::gather(clust,frq,names(.)[names(.) %in% unique(clustDf$clust)]) %>%
+                         dplyr::mutate(clust = as.numeric(clust)) %>%
+                         dplyr::filter(frq > 0)
+                       ) %>%
+      dplyr::mutate(clust = as.numeric(clust)
+                    , cluster = numbers2words(as.numeric(clust))
+                    , cluster = fct_reorder(cluster,clust)
+                    )
+    
+  }
+  
+  #------Clustering - Diagnostics----------
+  
+  
+  diagnostic_plot <- function(diagnosticDf,labelDiagnostic = "diagnostic") {
+    
+    ggplot(diagnosticDf
+           ,aes(groups
+                , value
+                , colour = combo
+                , alpha = weight
+                , label = groups
+                , size = top
+                )
+           ) +
+      geom_point() +
+      geom_text_repel(data = diagnosticDf %>%
+                        dplyr::filter(best)
+                      , size = 2
+                      , show.legend = FALSE
+                      , box.padding = 1
+                      , min.segment.length = 0
+                      , colour = "black"
+                      ) +
+      facet_grid(as.formula(paste0(labelDiagnostic,"~method"))
+                 , scales="free_y"
+                 ,  labeller = label_wrap_gen(25,multi_line = TRUE)
+                 ) +
+      labs(colour = "Combination"
+           , alpha = "Diagnostic used" #paste0("Top ",unique(diagnosticDf$topThresh)*100,"%")
+           , title = paste0("Labels indicate top ",numbers2words(unique(diagnosticDf$bestThresh))," results")
+           , size = paste0("Best ",(1-unique(diagnosticDf$topThresh))*100,"%")
+           ) +
+      scale_colour_viridis_c() +
+      scale_x_continuous(breaks = scales::pretty_breaks()) +
+      theme(strip.text.y = element_text(angle = 0))
+    
+  }
+  
+  
+  diagnostic_df <- function(df
+                            , useWeights = "weightClusters"
+                            , diagnosticMinGroups = targetMinGroups
+                            , summariseMethod = median
+                            , topThresh = 2/3
+                            , bestThresh = 5
+                            , diagnosticDf = diagnostics
+                            ) {
+    
+    df %>%
+      dplyr::filter(groups > diagnosticMinGroups) %>%
+      dplyr::select(method,groups,any_of(diagnostics$diagnostic)) %>%
+      #select_if(~ !all(is.na(.))) %>%
+      dplyr::group_by(method,groups) %>%
+      dplyr::summarise(across(any_of(diagnostics$diagnostic),summariseMethod)) %>%
+      dplyr::ungroup() %>%
+      tidyr::pivot_longer(any_of(diagnostics$diagnostic),names_to = "diagnostic", values_to = "value") %>%
+      dplyr::left_join(diagnostics) %>%
+      dplyr::group_by(diagnostic,diagDefinition) %>%
+      dplyr::mutate(scale = if_else(highGood
+                                    ,scales::rescale(value,to=c(0,1))
+                                    ,scales::rescale(desc(value),to=c(0,1))
+                                    )
+                    ) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(comboInit = scale*!!ensym(useWeights)) %>%
+      dplyr::group_by(method,groups) %>%
+      dplyr::mutate(combo = mean(comboInit)) %>%
+      dplyr::ungroup() %>%
+      dplyr::mutate(combo = scales::rescale(combo,to=c(0,1))) %>%
+      dplyr::mutate(topThresh = topThresh
+                    , bestThresh = bestThresh
+                    , top = combo >= topThresh
+                    , top = if_else(is.na(top),FALSE,top)
+                    , best = combo >= sort(unique(.$combo),TRUE)[bestThresh]
+                    , best = if_else(is.na(best),FALSE,best)
+                    , diagnostic = factor(diagnostic, levels = levels(diagnostics$diagnostic))
+                    , weight = !!ensym(useWeights)
+                    )
+    
+  }
+  
+#-------
+
+
+  dist_to_df <- function(inDist,patchNames) {
+    
+    # https://stackoverflow.com/questions/23474729/convert-object-of-class-dist-into-data-frame-in-r/23475065
+    
+    if (class(inDist) != "dist") stop("wrong input type")
+    A <- attr(inDist, "Size")
+    B <- patchNames
+    if (isTRUE(attr(inDist, "Diag"))) attr(inDist, "Diag") <- FALSE
+    if (isTRUE(attr(inDist, "Upper"))) attr(inDist, "Upper") <- FALSE
+    data.frame(
+      row = B[unlist(lapply(sequence(A)[-1], function(x) x:A))],
+      col = rep(B[-length(B)], (length(B)-1):1),
+      value = as.vector(inDist))
+    
+  }
+
+
+  
+
+
+# Convert deg°min'sec to decimal degrees
+  deg_min_sec_to_dec_deg <- function(df,col,sep = "\u00B0|'", into = c("lat","long")) {
+    
+    dfNames <- names(df)
+    
+    df %>%
+      tidyr::separate(!!ensym(col), into = c("deg","min","sec"), sep = paste0(sep)) %>%
+      dplyr::mutate(sec = parse_number(sec)) %>%
+      dplyr::mutate(across(all_of(c("deg","min","sec")),as.numeric)) %>%
+      dplyr::mutate(!!ensym(into) := deg + min/60 + sec/60^2) %>%
+      dplyr::select(all_of(dfNames),!!ensym(into))
+    
+  }
+  
+# get a bib entry from a DOI
+  get_bib <- function(DOI,outFile = NULL){
+    
+    # https://stackoverflow.com/questions/57340204/r-convert-list-of-dois-to-bibtex
+    
+    h <- curl::new_handle()
+    curl::handle_setheaders(h, "accept" = "application/x-bibtex")
+    
+    get_the_bib <- function(doi) {
+      
+      try(
+        curl::curl(doi,handle=h) %>%
+        readLines(warn = FALSE) %>%
+        {if(is.character(outFile)) write(.,file=outFile,append = TRUE) else (.)}
+      )
+      
+    }
+    
+    DOI %>%
+      gsub("https://doi.org/","",.,fixed = TRUE) %>%
+      paste0("https://doi.org/",.) %>%
+      map(get_the_bib)
+    
+  }
+
+
   # Git add.
   gitadd <- function(dir = getwd()){
     cmd_list <- list(
@@ -55,14 +316,17 @@
   }
   
 # make package bibliography, including tweaks for known package issues.
-  fix_package_bib <- function(bibFile) {
+  fix_bib <- function(bibFile, makeKey = FALSE, isPackageBib = FALSE) {
     
     inRefs <- bib2df::bib2df(bibFile)
     
-    namesInRefs <- colnames(inRefs)
+    namesInRefs <- colnames(inRefs) %>%
+      grep("\\.\\d+$",.,value = TRUE,invert = TRUE) %>%
+      `[`(1:28) %>%
+      c(.,"COPYRIGHT")
     
-    refs <- bib2df::bib2df(bibFile) %>%
-      dplyr::mutate(package = gsub("R-|\\d{4}","",BIBTEXKEY)) %>%
+    refs <- inRefs %>%
+      {if(isPackageBib) (.) %>% dplyr::mutate(package = gsub("R-|\\d{4}","",BIBTEXKEY)) else (.)} %>%
       tidytext::unnest_tokens("titleWords"
                               ,TITLE
                               ,token = "regex"
@@ -71,19 +335,33 @@
                               #,strip_punct = FALSE
                               ,collapse = FALSE
                               ) %>%
-      dplyr::mutate(isCap = grepl(paste0(LETTERS,collapse="|"),titleWords)
+      dplyr::mutate(titleWords = gsub("\\{|\\}","",titleWords)
+                    , isCap = grepl(paste0(LETTERS,collapse="|"),titleWords)
                     , titleWords = if_else(isCap,paste0("{",titleWords,"}"),titleWords)
                     ) %>%
       tidyr::nest(data = c(titleWords,isCap)) %>%
       dplyr::mutate(TITLE = map_chr(data,. %>% dplyr::pull(titleWords) %>% paste0(collapse = " "))
-                    , TITLE = map2_chr(package,TITLE,~gsub(.x,paste0("{",.x,"}"),.y))
                     , AUTHOR = map(AUTHOR,~gsub("Microsoft Corporation","{Microsoft Corporation}",.))
                     , AUTHOR = map(AUTHOR,~gsub("Fortran original by |R port by ","",.))
                     , AUTHOR = map(AUTHOR, ~gsub("with contributions by","and",.))
+                    , AUTHOR = map(AUTHOR, ~gsub("Â "," ",.))
+                    , YEAR = substr(YEAR,1,4)
                     ) %>%
-      dplyr::select(any_of(namesInRefs))
+      {if(makeKey) (.) %>%
+          dplyr::mutate(BIBTEXKEY = map2_chr(AUTHOR
+                                       ,YEAR
+                                       ,~paste0(toupper(gsub("[[:punct:]]|\\s","",.x[[1]]))
+                                                , .y
+                                                )
+                                       )
+                        ) else (.)} %>%
+      {if(isPackageBib) (.) %>% dplyr::mutate(TITLE = map2_chr(package,TITLE,~gsub(.x,paste0("{",.x,"}"),.y))) else (.)} %>%
+      dplyr::select(any_of(namesInRefs)) %>%
+      dplyr::filter(!grepl("MEDIA SCREEN AND",CATEGORY))
     
     bib2df::df2bib(refs,bibFile)
+    
+    return(refs)
     
   }
 
@@ -96,7 +374,7 @@
       dplyr::count(!!ensym(col)) %>%
       dplyr::filter(n > 1)
     
-    print(paste0("there are ",nrow(notUnique)," ",col,"(s) that are not unique: ",dplyr::pull(notUnique[,1])))
+    print(paste0("there are ",nrow(notUnique)," ",col,"(s) that are not unique: ",vec_to_sentence(notUnique[,1])))
     
   }
 
@@ -188,15 +466,15 @@ unscale_data <- function(scaledData) {
 # A function to run random forest over a df with first column 'cluster' and other columns explanatory
 
   rf_mod_fold <- function(envClust
-                     , clustCol = "cluster"
-                     , envCols = names(patchesEnvSelect)[-1]
-                     , idCol = "SiteID"
-                     , doFolds = folds
-                     , outFile
-                     , saveModel = FALSE
-                     , saveImp = FALSE
-                     , ...
-                     ){
+                          , clustCol = "cluster"
+                          , envCols = names(patchesEnvSelect)[-1]
+                          , idCol = "cell"
+                          , doFolds = folds
+                          , outFile
+                          , saveModel = FALSE
+                          , saveImp = FALSE
+                          , ...
+                          ){
     
     idCol <- if(is.numeric(idCol)) names(envClust)[idCol] else idCol
     
@@ -912,4 +1190,336 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
     results <- list("info"=info, "classif" = Jclassif, "breaks.max.GoF"=max.GoF.brks, "class.data" = df)
     return(results)
   }
+  
+  
+
+# a function to retrieve taxonomy to accepted names and retrieve taxonomic hierarchy for a df with a column of taxonomic names
+  
+  gbif_tax <- function(df,sppCol=1,idCol=2,outFile="data/luGBIF.feather",kingType="Plantae"){
+    
+    sppCol <- if(is.character(sppCol)) sppCol else names(df)[sppCol]
+    idCol <- if(is.character(idCol)) idCol else names(df)[idCol]
+    
+    dat <- if(file.exists(outFile)) {
+      
+      df %>%
+        dplyr::mutate(Species = !!ensym(sppCol)
+                      , id = !!ensym(idCol)
+        ) %>%
+        dplyr::anti_join(read_feather(outFile) %>%
+                           dplyr::filter(!is.na(key))
+                         , by = "id"
+        ) %>%
+        dplyr::arrange(Species)
+      
+    } else if (file.exists(paste0(gsub(".feather","",outFile),"_temp.feather"))) {
+      
+      df %>%
+        dplyr::mutate(Species = !!ensym(sppCol)
+                      , id = !!ensym(idCol)
+        ) %>%
+        dplyr::anti_join(read_feather(paste0(gsub(".feather","",outFile),"_temp.feather"))) %>%
+        dplyr::arrange(Species)
+      
+    } else {
+      
+      df %>%
+        dplyr::mutate(Species = !!ensym(sppCol)
+                      , id = !!ensym(idCol)
+        ) %>%
+        dplyr::arrange(Species)
+      
+    }
+    
+    taxa <- dat %>%
+      dplyr::pull(Species) %>%
+      gsub("dead|\\s*\\(.*\\)|\\'|\\?| spp\\.| sp\\.|#|\\s^","",.) %>%
+      gsub(" x .*$| X .*$","",.) %>%
+      str_squish()
+    
+    resStructure <- tribble(~id
+                            , ~usageKey
+                            , ~scientificName
+                            , ~canonicalName
+                            , ~rank
+                            , ~status
+                            , ~confidence
+                            , ~matchType
+                            , ~kingdom
+                            , ~phylum
+                            , ~class
+                            , ~order
+                            , ~family
+                            , ~genus
+                            , ~species
+                            #, ~common
+                            , ~kingdomKey
+                            , ~phylumKey
+                            , ~classKey
+                            , ~orderKey
+                            , ~familyKey
+                            , ~genusKey
+                            , ~speciesKey
+                            , ~Species
+                            , ~Stamp
+    )
+    
+    
+    if(length(taxa)>0){
+      
+      for (i in 1:length(taxa)){
+        
+        print(taxa[i])
+        
+        taxGBIF <- name_backbone(taxa[i], kingdom = kingType)
+        
+        
+        if(taxGBIF$matchType == "NONE") {
+          
+          taxGBIF <- tibble(Species = taxa[i])
+          
+        }
+        
+        
+        taxGBIF <- if(sum(grepl("acceptedUsageKey",names(taxGBIF)))>0) {
+          name_usage(taxGBIF$acceptedUsageKey,return="data")$data %>%
+            dplyr::mutate(matchType = "Synonym") %>%
+            dplyr::rename(usageKey = key
+                          , status = taxonomicStatus
+            )
+        } else {
+          taxGBIF
+        }
+        
+        res <- resStructure %>%
+          dplyr::bind_rows(
+            if(exists("taxGBIF")) {
+              as_tibble(taxGBIF) %>%
+                dplyr::bind_cols(dat[i,]) %>%
+                dplyr::mutate(Stamp = Sys.time())
+            } else {
+              dat[i,] %>%
+                dplyr::mutate(Stamp = Sys.time())
+            }
+          ) %>%
+          dplyr::select(1:ncol(resStructure))
+        
+        if(file.exists(paste0(gsub(".feather","",outFile),"_temp.feather"))) {
+          
+          write_feather(res %>%
+                          dplyr::bind_rows(read_feather(paste0(gsub(".feather","",outFile),"_temp.feather")))
+                        , paste0(gsub(".feather","",outFile),"_temp.feather")
+          )
+          
+        } else {
+          
+          write_feather(res
+                        , paste0(gsub(".feather","",outFile),"_temp.feather")
+          )  
+          
+        }
+        
+      }
+      
+    }
+    
+    # Clean up results
+    if(file.exists(paste0(gsub(".feather","",outFile),"_temp.feather"))) {
+      
+      read_feather(paste0(gsub(".feather","",outFile),"_temp.feather")) %>%
+        dplyr::mutate_if(is.logical,as.character) %>%
+        dplyr::mutate(confidence = as.numeric(confidence)) %>%
+        dplyr::mutate(Taxa = if_else(!is.na(species)
+                                     ,species
+                                     ,if_else(!is.na(genus)
+                                              , genus
+                                              , if_else(!is.na(family)
+                                                        , family
+                                                        , if_else(!is.na(order)
+                                                                  , order
+                                                                  , if_else(!is.na(class)
+                                                                            , class
+                                                                            , if_else(!is.na(phylum)
+                                                                                      , phylum
+                                                                                      , if_else(!is.na(kingdom)
+                                                                                                , kingdom
+                                                                                                , Species
+                                                                                      )
+                                                                            )
+                                                                  )
+                                                        )
+                                              )
+                                     )
+        )
+        ) %>%
+        dplyr::select(id = id
+                      , key = usageKey
+                      , Rank = rank
+                      , Taxa
+                      , originalName = Species
+                      , Kingdom = kingdom
+                      , Phylum = phylum
+                      , Class = class
+                      , Order = order
+                      , Family = family
+                      , Genus = genus
+                      , Species = species
+                      #, Common = common
+                      , scientificName
+                      , canonicalName
+                      , Status = status
+                      , Confidence = confidence
+                      , Match = matchType
+                      , Stamp
+        ) %>%
+        (if(!file.exists(outFile)) {
+          
+          function(x) x
+          
+        } else {
+          
+          function(x) x %>%
+            dplyr::bind_rows(read_feather(outFile))
+          
+        }
+        
+        ) %>%
+        dplyr::group_by(id) %>%
+        dplyr::arrange(desc(Stamp)) %>%
+        dplyr::slice(1) %>%
+        dplyr::ungroup() %>%
+        write_feather(outFile)
+      
+      file.remove(paste0(gsub(".feather","",outFile),"_temp.feather"))
+      
+    } else {
+      
+      {warning( "No taxa supplied" ) }
+      
+    }
+    
+  }
+  
+  # Find common name from GBIF (key is the gbif 'useagekey')
+  get_gbif_common <- function(key) {
+    
+    print(key)
+    
+    commonNames <- name_usage(key)$data %>%
+      dplyr::select(contains("Key")) %>%
+      dplyr::select(where(is.numeric)) %>%
+      tidyr::pivot_longer(1:ncol(.),names_to = "key") %>%
+      dplyr::mutate(key = map_chr(key,~gsub("Key","",.))
+                    , key = str_to_sentence(key)
+                    ) %>%
+      dplyr::filter(key %in% luRank$Rank) %>%
+      dplyr::left_join(luRank, by = c("key" = "Rank")) %>%
+      dplyr::filter(sort == max(sort)) %>%
+      dplyr::pull(value) %>%
+      name_usage(data="vernacularNames")
+    
+    df <- commonNames$data %>%
+      dplyr::select(any_of(c("vernacularName","language","preferred")))
+    
+    hasAny <- nrow(df) > 0
+    
+    hasPreferred <- if("preferred" %in% names(df)) sum(df$preferred, na.rm = TRUE) > 0 else FALSE
+    
+    hasLanguage <- if("language" %in% names(df)) sum(df$preferred, na.rm = TRUE) > 0 else FALSE
+    
+    hasPreferredEng <- if(hasPreferred) df %>%
+      dplyr::filter(preferred) %>%
+      dplyr::filter(language == "eng") %>%
+      nrow() %>%
+      `>` (0) else FALSE
+    
+    hasEng <- if(hasLanguage) df %>%
+      dplyr::filter(language == "eng") %>%
+      nrow() %>%
+      `>` (0) else FALSE
+    
+    if(hasPreferredEng) {
+      
+      df %>%
+        dplyr::filter(preferred
+                      , language == "eng"
+                      ) %>%
+        dplyr::pull(vernacularName) %>%
+        paste0(collapse = ", ")
+      
+    } else if(hasEng) {
+      
+      df %>%
+        dplyr::filter(language == "eng") %>%
+        tidytext::unnest_tokens("common",vernacularName,token = "regex", pattern = ",|and",collapse = FALSE) %>%
+        dplyr::mutate(common = gsub("^\\s|\\s$|etc","",common)) %>%
+        dplyr::distinct(common) %>%
+        dplyr::pull(common) %>%
+        sort() %>%
+        paste0(collapse = ", ")
+      
+    } else if(hasAny) {
+      
+      df %>%
+        dplyr::count(language,vernacularName) %>%
+        dplyr::arrange(desc(n)
+                       , language
+        ) %>%
+        dplyr::slice(1) %>%
+        dplyr::pull(vernacularName) %>%
+        `[` (1)
+      
+    } else ""
+    
+  }
+  
+  # Add common name to existing taxonomic data frame
+  add_gbif_common <- function(path = "data/luGBIF.feather") {
+    
+    gbifTaxDf <- read_feather(path) %>%
+      #(if(testing) {. %>% dplyr::sample_n(5)} else {.}) %>%
+      dplyr::mutate(Common = future_map_chr(key,get_gbif_common))
+    
+    write_feather(gbifTaxDf,path)
+    
+  }
+  
+  # Create polygon mask for filtering of patches
+  make_aoi <- function(polygons
+                       ,filterPolys = FALSE
+                       ,filterPolysCol=NULL
+                       ,polyBuffer
+                       ,doMask = TRUE
+                       ) {
+    
+    if(filterPolys != FALSE) polygons <- polygons %>%
+        dplyr::filter(!!ensym(filterPolysCol) %in% filterPolys)
+    
+    polygons <- if(doMask) {
+      
+      polygons %>%
+        dplyr::mutate(dissolve = 1) %>%
+        dplyr::summarise(Include = n()) %>%
+        st_cast() %>%
+        st_buffer(polyBuffer) 
+      
+    } else {
+      
+      polygons %>%
+        dplyr::mutate(dissolve = 1) %>%
+        dplyr::summarise(Include = n()) %>%
+        st_cast() %>%
+        st_buffer(polyBuffer) %>%
+        st_bbox() %>%
+        st_as_sfc() %>%
+        st_sf() %>%
+        dplyr::mutate(Include = 1)
+      
+    }
+    
+    polygons <- polygons %>%
+      st_transform(crs = 3577)
+    
+  }
+  
   

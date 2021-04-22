@@ -15,7 +15,6 @@
   
   write_bib(packages,file="packageCitations.bib",tweak=TRUE)
 
-
   
 #-------Load functions-------
   
@@ -68,7 +67,7 @@
 
   repo <- system("git config remote.origin.url", intern = TRUE)
   
-  repoLink <- path(dirname(repo),"blob","master",basename(repo))
+  repoLink <- fs::path(dirname(repo),"blob","master",basename(repo))
   
   reportLink <- path(repoLink
                        , list.files(pattern="Rmd") %>% grep("^_",.,invert=TRUE,value=TRUE)
