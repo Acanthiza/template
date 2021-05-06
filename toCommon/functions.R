@@ -1,7 +1,85 @@
 
 #------Clustering---------
 
-  # Make a cluster data frame
+  make_clusters <- function(data
+                            ,methodsDf = clustMethod
+                            ,sppCol = "Taxa"
+                            ,siteCol = "list"
+                            ,groups = possibleGroups[possibleGroups < 0.5*length(unique(data$Taxa))]
+                            ,minTaxaCount = 1
+                            ) {
+    
+    datWide <- data %>%
+      dplyr::add_count(!!ensym(sppCol)) %>%
+      dplyr::filter(n > minTaxaCount) %>%
+      dplyr::select(!!ensym(sppCol),!!ensym(siteCol)) %>%
+      dplyr::mutate(p = 1) %>%
+      tidyr::pivot_wider(names_from = all_of(sppCol), values_from = "p", values_fill = 0)
+    
+    siteNames <- datWide %>% dplyr::pull(!!ensym(siteCol))
+    
+    dist <- parDist(datWide %>% tibble::column_to_rownames(siteCol) %>% as.matrix()
+                    , method = "bray"
+                    , threads = useCores
+                    )
+    
+    assign("sqDist",as.matrix(dist^2),pos = .GlobalEnv)
+    
+    dend <- methodsDf %>%
+      dplyr::mutate(dend = map(method
+                               ,~fastcluster::hclust(dist, .)
+                               )
+                    )
+    
+    clust <- dend %>%
+      dplyr::mutate(clusters = map(dend
+                                   , cutree
+                                   , groups
+                                   )
+                    , clusters = map(clusters
+                                     , as_tibble
+                                     )
+                    ) %>%
+      dplyr::select(-dend) %>%
+      tidyr::unnest(clusters) %>%
+      tidyr::pivot_longer(2:ncol(.),names_to = "groups",values_to ="clust") %>%
+      dplyr::mutate(groups = as.integer(groups)) %>%
+      tidyr::nest(clusters = c(clust)) %>%
+      dplyr::mutate(clusters = future_map(clusters
+                                          , . %>%
+                                            dplyr::mutate(!!ensym(siteCol) := siteNames
+                                                          , cluster = numbers2words(clust)
+                                                          , cluster = fct_reorder(cluster,clust)
+                                                          )
+                                          )
+                    )
+    
+  }
+  
+  
+  clustering_summarise <- function(clustDf,groupName="clust") {
+    
+    clust <- clustDf %>% dplyr::select(all_of(groupName))
+    
+    tab <- table(clust)
+    
+    tibble(nSites = nrow(clust)
+           , nClusters = length(tab)
+           , minClustSize = min(tab)
+           , avClustSize = mean(tab)
+           , maxClustSize = max(tab)
+           )
+    
+  }
+  
+  
+  clustering_explore <- function(clusters)
+    
+    
+    
+  
+
+  # Make a cluster data frame (now prefer to use make_clusters)
   make_cluster_df <- function(rawClusters,siteIDsDf) {
     
     siteIDsDf %>%
@@ -15,24 +93,7 @@
   }
   
 
-  cluster_summarise <- function(df,groupName="clust",smallestCluster = minAbsSites) {
-    
-    clust <- df %>% dplyr::select(all_of(groupName))
-    
-    tab <- table(clust)
-    
-    tibble(nSites = nrow(clust)
-           , nClusters = length(tab)
-           , minClustSize = min(tab)
-           , avClustSize = mean(tab)
-           , maxClustSize = max(tab)
-           , nClustersMinAbsSites = sum(tab >= smallestCluster)
-           , nSitesClustersMinAbsSites = sum(tab[tab >= smallestCluster])
-           , propClustersMin = nClustersMinAbsSites/nClusters
-           , propSitesClustersMin = nSitesClustersMinAbsSites/nSites
-    )
-    
-  }
+  
   
   make_sil <- function(clustDf, distObj = datDist, clustID = "clust"){
     
@@ -1195,202 +1256,126 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
 
 # a function to retrieve taxonomy to accepted names and retrieve taxonomic hierarchy for a df with a column of taxonomic names
   
-  gbif_tax <- function(df,sppCol=1,idCol=2,outFile="data/luGBIF.feather",kingType="Plantae"){
+  gbif_tax <- function(df
+                       , sppCol=1
+                       , outFile="data/luGBIF.feather"
+                       , kingType="Plantae"
+                       , getCommon = FALSE
+                       , targetRank = "Species"
+                       ){
     
-    sppCol <- if(is.character(sppCol)) sppCol else names(df)[sppCol]
-    idCol <- if(is.character(idCol)) idCol else names(df)[idCol]
+    tmpFile <- paste0(gsub(".feather","",outFile),"_temp.feather")
     
-    dat <- if(file.exists(outFile)) {
-      
-      df %>%
-        dplyr::mutate(Species = !!ensym(sppCol)
-                      , id = !!ensym(idCol)
-        ) %>%
-        dplyr::anti_join(read_feather(outFile) %>%
-                           dplyr::filter(!is.na(key))
-                         , by = "id"
-        ) %>%
-        dplyr::arrange(Species)
-      
-    } else if (file.exists(paste0(gsub(".feather","",outFile),"_temp.feather"))) {
-      
-      df %>%
-        dplyr::mutate(Species = !!ensym(sppCol)
-                      , id = !!ensym(idCol)
-        ) %>%
-        dplyr::anti_join(read_feather(paste0(gsub(".feather","",outFile),"_temp.feather"))) %>%
-        dplyr::arrange(Species)
-      
-    } else {
-      
-      df %>%
-        dplyr::mutate(Species = !!ensym(sppCol)
-                      , id = !!ensym(idCol)
-        ) %>%
-        dplyr::arrange(Species)
-      
-    }
-    
-    taxa <- dat %>%
-      dplyr::pull(Species) %>%
-      gsub("dead|\\s*\\(.*\\)|\\'|\\?| spp\\.| sp\\.|#|\\s^","",.) %>%
-      gsub(" x .*$| X .*$","",.) %>%
-      str_squish()
-    
-    resStructure <- tribble(~id
-                            , ~usageKey
-                            , ~scientificName
-                            , ~canonicalName
-                            , ~rank
-                            , ~status
-                            , ~confidence
-                            , ~matchType
-                            , ~kingdom
-                            , ~phylum
-                            , ~class
-                            , ~order
-                            , ~family
-                            , ~genus
-                            , ~species
-                            #, ~common
-                            , ~kingdomKey
-                            , ~phylumKey
-                            , ~classKey
-                            , ~orderKey
-                            , ~familyKey
-                            , ~genusKey
-                            , ~speciesKey
-                            , ~Species
-                            , ~Stamp
+    luRank <- tribble(
+      ~Rank, ~sort
+      , "Kingdom", 1
+      , "Phylum", 2
+      , "Class", 3
+      , "Order", 4
+      , "Family", 5
+      , "Genus", 6
+      , "Species", 7
+      , "Subspecies", 8
+      , "Variety", 9
+      , "Form", 10
     )
     
+    assign("luRank",luRank,envir = .GlobalEnv)
     
-    if(length(taxa)>0){
+    targetSort <- luRank %>%
+      dplyr::filter(Rank == targetRank) %>%
+      dplyr::pull(sort)
+    
+    alreadyDone01 <- if(file.exists(outFile)) read_feather(outFile) %>%
+      dplyr::distinct(originalName) %>%
+      dplyr::pull()
       
-      for (i in 1:length(taxa)){
+    alreadyDone02 <- if(file.exists(tmpFile)) read_feather(tmpFile) %>%
+      dplyr::distinct(originalName) %>%
+      dplyr::pull()
+    
+    alreadyDone <- c(get0("alreadyDone01"),get0("alreadyDone02"))
+    
+    toCheck <- df %>%
+      dplyr::select(sppCol) %>%
+      dplyr::distinct() %>%
+      dplyr::pull()
+    
+    taxa <- tibble(originalName = setdiff(toCheck,alreadyDone)) %>%
+      dplyr::filter(!grepl("BOLD:.*\\d{4}",originalName)
+                    , !is.na(originalName)
+                    ) %>%
+      dplyr::mutate(taxa = gsub("dead|\\'|\\?| spp\\.| sp\\.|#|\\s^","",originalName)
+                    , taxa = gsub(" x .*$| X .*$","",taxa)
+                    , taxa = str_squish(taxa)
+                    )
+    
+    if(length(taxa$taxa)>0){
+      
+      for (i in 1:length(taxa$taxa)){
         
-        print(taxa[i])
+        print(taxa$taxa[i])
         
-        taxGBIF <- name_backbone(taxa[i], kingdom = kingType)
-        
-        
-        if(taxGBIF$matchType == "NONE") {
-          
-          taxGBIF <- tibble(Species = taxa[i])
-          
-        }
-        
+        taxGBIF <- name_backbone(taxa$taxa[i], kingdom = kingType) %>%
+          dplyr::mutate(originalName = taxa$originalName[i])
         
         taxGBIF <- if(sum(grepl("acceptedUsageKey",names(taxGBIF)))>0) {
+          
           name_usage(taxGBIF$acceptedUsageKey,return="data")$data %>%
             dplyr::mutate(matchType = "Synonym") %>%
             dplyr::rename(usageKey = key
                           , status = taxonomicStatus
-            )
+                          ) %>%
+            dplyr::mutate(originalName = taxa$originalName[i])
+          
         } else {
+          
           taxGBIF
-        }
-        
-        res <- resStructure %>%
-          dplyr::bind_rows(
-            if(exists("taxGBIF")) {
-              as_tibble(taxGBIF) %>%
-                dplyr::bind_cols(dat[i,]) %>%
-                dplyr::mutate(Stamp = Sys.time())
-            } else {
-              dat[i,] %>%
-                dplyr::mutate(Stamp = Sys.time())
-            }
-          ) %>%
-          dplyr::select(1:ncol(resStructure))
-        
-        if(file.exists(paste0(gsub(".feather","",outFile),"_temp.feather"))) {
           
-          write_feather(res %>%
-                          dplyr::bind_rows(read_feather(paste0(gsub(".feather","",outFile),"_temp.feather")))
+        }
+          
+        if(getCommon) taxGBIF$Common <- get_gbif_common(taxGBIF$usageKey)
+        
+        taxGBIF$Taxa <- taxGBIF %>%
+          tidyr::pivot_longer(where(is.numeric),names_to = "key") %>%
+          dplyr::mutate(key = map_chr(key,~gsub("Key","",.))
+                        , key = str_to_sentence(key)
+                        ) %>%
+          dplyr::filter(key %in% luRank$Rank) %>%
+          dplyr::left_join(luRank, by = c("key" = "Rank")) %>%
+          dplyr::filter(sort <= targetSort) %>%
+          dplyr::filter(sort == max(sort)) %>%
+          dplyr::select(tolower(luRank$Rank[luRank$sort == .$sort])) %>%
+          dplyr::pull()
+        
+        taxGBIF$Stamp <- Sys.time()
+        
+        if(file.exists(tmpFile)) {
+          
+          write_feather(taxGBIF %>%
+                          dplyr::bind_rows(read_feather(tmpFile))
                         , paste0(gsub(".feather","",outFile),"_temp.feather")
-          )
+                        )
           
         } else {
           
-          write_feather(res
+          write_feather(taxGBIF
                         , paste0(gsub(".feather","",outFile),"_temp.feather")
-          )  
+                        )
           
-        }
+          }
         
       }
       
-    }
-    
-    # Clean up results
-    if(file.exists(paste0(gsub(".feather","",outFile),"_temp.feather"))) {
-      
-      read_feather(paste0(gsub(".feather","",outFile),"_temp.feather")) %>%
-        dplyr::mutate_if(is.logical,as.character) %>%
-        dplyr::mutate(confidence = as.numeric(confidence)) %>%
-        dplyr::mutate(Taxa = if_else(!is.na(species)
-                                     ,species
-                                     ,if_else(!is.na(genus)
-                                              , genus
-                                              , if_else(!is.na(family)
-                                                        , family
-                                                        , if_else(!is.na(order)
-                                                                  , order
-                                                                  , if_else(!is.na(class)
-                                                                            , class
-                                                                            , if_else(!is.na(phylum)
-                                                                                      , phylum
-                                                                                      , if_else(!is.na(kingdom)
-                                                                                                , kingdom
-                                                                                                , Species
-                                                                                      )
-                                                                            )
-                                                                  )
-                                                        )
-                                              )
-                                     )
-        )
-        ) %>%
-        dplyr::select(id = id
-                      , key = usageKey
-                      , Rank = rank
-                      , Taxa
-                      , originalName = Species
-                      , Kingdom = kingdom
-                      , Phylum = phylum
-                      , Class = class
-                      , Order = order
-                      , Family = family
-                      , Genus = genus
-                      , Species = species
-                      #, Common = common
-                      , scientificName
-                      , canonicalName
-                      , Status = status
-                      , Confidence = confidence
-                      , Match = matchType
-                      , Stamp
-        ) %>%
-        (if(!file.exists(outFile)) {
-          
-          function(x) x
-          
-        } else {
-          
-          function(x) x %>%
-            dplyr::bind_rows(read_feather(outFile))
-          
-        }
-        
-        ) %>%
-        dplyr::group_by(id) %>%
-        dplyr::arrange(desc(Stamp)) %>%
-        dplyr::slice(1) %>%
+      # Clean up results
+      read_feather(tmpFile) %>%
+        {if(!file.exists(outFile)) (.) else (.) %>% dplyr::bind_rows(read_feather(outFile))} %>%
+        dplyr::group_by(originalName) %>%
+        dplyr::filter(Stamp == max(Stamp)) %>%
         dplyr::ungroup() %>%
         write_feather(outFile)
       
-      file.remove(paste0(gsub(".feather","",outFile),"_temp.feather"))
+      file.remove(tmpFile)
       
     } else {
       
