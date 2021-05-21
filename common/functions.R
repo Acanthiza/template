@@ -196,7 +196,7 @@ unscale_data <- function(scaledData) {
                      , envCols = names(patchesEnvSelect)[-1]
                      , idCol = "SiteID"
                      , doFolds = folds
-                     , outFile
+                     , outFile = fs::path("out","rfMod_conf.feather")
                      , saveModel = FALSE
                      , saveImp = FALSE
                      , ...
@@ -222,10 +222,10 @@ unscale_data <- function(scaledData) {
         if(doFolds > 1) {
           
           train <- envClust[envClust$fold != fold,which(names(envClust) %in% c(clustCol,envCols))] %>%
-            dplyr::mutate(cluster = factor(cluster))
+            dplyr::mutate(!!ensym(clustCol) := factor(!!ensym(clustCol)))
           
           test <- envClust[envClust$fold == fold,which(names(envClust) %in% c(idCol,clustCol,envCols))] %>%
-            dplyr::mutate(cluster = factor(cluster, levels = levels(train$cluster)))
+            dplyr::mutate(!!ensym(clustCol) := factor(!!ensym(clustCol)))
           
           rfMod <- randomForest(x = train[,envCols]
                                 , y = train[,clustCol] %>% dplyr::pull(!!ensym(clustCol))
@@ -271,7 +271,7 @@ unscale_data <- function(scaledData) {
         
         if(saveImp) {feather::write_feather(as_tibble(rfMod$importance, rownames = "att"),gsub("_rfPred","_rfImp",outFile))}
         
-        if(saveModel) {feather::write_feather(rfMod,gsub("_rfPred","",outFile))}
+        if(saveModel) {readr::write_rds(rfMod,gsub("_conf","_mod",outFile))}
         
       }
       
@@ -279,7 +279,17 @@ unscale_data <- function(scaledData) {
     
     map(folds,fold_rf_mod)
     
-    }
+  }
+  
+  
+  # get metrics from saved predictions
+  make_conf <- function(df) {
+    
+    caret::confusionMatrix(df$predCluster,df$cluster)
+    
+  }
+  
+  
   
   rf_mod <- function(envClust
                           , clustCol

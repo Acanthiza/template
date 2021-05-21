@@ -1,6 +1,4 @@
 
-
-
 #------Clustering---------
 
   make_clusters <- function(data
@@ -145,7 +143,7 @@
       dplyr::inner_join(dfWithNames) %>%
       .[,colSums(. != 0) > 0]
     
-    labdsv::indval(datForInd[,names(datForInd) %in% names(datWide[,-1])]
+    labdsv::indval(datForInd[,names(datForInd) %in% names(dfWithNames[,-1])]
                    ,datForInd$clust
                    )
     
@@ -182,19 +180,25 @@
   #------Clustering - Diagnostics----------
   
   
-  diagnostic_plot <- function(diagnosticDf,labelDiagnostic = "diagnostic") {
+  diagnostic_plot <- function(diagnosticDf
+                              ,labelDiagnostic = "diagnostic"
+                              ,displayAll = FALSE
+                              ) {
     
-    ggplot(diagnosticDf
+    df <- diagnosticDf %>%
+      {if(displayAll) (.) else (.) %>% dplyr::filter(weight)}
+    
+    ggplot(df
            ,aes(groups
                 , value
                 , colour = combo
-                , alpha = weight
+                , alpha = if(displayAll) weight else NULL
                 , label = groups
                 , size = top
                 )
            ) +
       geom_point() +
-      geom_text_repel(data = diagnosticDf %>%
+      geom_text_repel(data = df %>%
                         dplyr::filter(best)
                       , size = 2
                       , show.legend = FALSE
@@ -204,25 +208,27 @@
                       ) +
       facet_grid(as.formula(paste0(labelDiagnostic,"~method"))
                  , scales="free_y"
-                 ,  labeller = label_wrap_gen(25,multi_line = TRUE)
+                 ,  labeller = label_wrap_gen(20,multi_line = TRUE)
                  ) +
       labs(colour = "Combination"
            , alpha = "Diagnostic used" #paste0("Top ",unique(diagnosticDf$topThresh)*100,"%")
-           , title = paste0("Labels indicate top ",numbers2words(unique(diagnosticDf$bestThresh))," results")
-           , size = paste0("Best ",(1-unique(diagnosticDf$topThresh))*100,"%")
+           , title = paste0("Labels indicate top ",numbers2words(unique(df$bestThresh))," results")
+           , size = paste0("Best ",(unique(df$topThresh))*100,"%")
            ) +
       scale_colour_viridis_c() +
       scale_x_continuous(breaks = scales::pretty_breaks()) +
-      theme(strip.text.y = element_text(angle = 0))
+      theme(strip.text.y = element_text(angle = 0)
+            , strip.text.x = element_text(angle = 90)
+            )
     
   }
   
   
   diagnostic_df <- function(df
                             , useWeights = "weightClusters"
-                            , diagnosticMinGroups = targetMinGroups
+                            , diagnosticMinGroups = min(possibleGroups)
                             , summariseMethod = median
-                            , topThresh = 2/3
+                            , topThresh = 0.25
                             , bestThresh = 5
                             , diagnosticDf = diagnostics
                             ) {
@@ -250,7 +256,7 @@
       dplyr::mutate(combo = scales::rescale(combo,to=c(0,1))) %>%
       dplyr::mutate(topThresh = topThresh
                     , bestThresh = bestThresh
-                    , top = combo >= topThresh
+                    , top = combo >= quantile(combo,probs = 1-topThresh,na.rm = TRUE)
                     , top = if_else(is.na(top),FALSE,top)
                     , best = combo >= sort(unique(.$combo),TRUE)[bestThresh]
                     , best = if_else(is.na(best),FALSE,best)
@@ -297,6 +303,21 @@
     
   }
   
+#-------Bibliographies----------
+  
+# get next 'RN' number to use
+  
+  next_bib_no <- function(bibPath = fs::path("..","template","toCommon","refs.bib")) {
+    
+    as_tibble(read_lines(bibPath)) %>%
+      dplyr::filter(grepl("^@",value)) %>%
+      dplyr::mutate(value = parse_number(value)) %>%
+      dplyr::pull(value) %>%
+      max() %>%
+      `+` (1)
+    
+  }
+  
 # get a bib entry from a DOI
   get_bib <- function(DOI,outFile = NULL){
     
@@ -322,6 +343,58 @@
     
   }
 
+# make package bibliography, including tweaks for known package issues.
+  fix_bib <- function(bibFile, makeKey = FALSE, isPackageBib = FALSE) {
+    
+    inRefs <- bib2df::bib2df(bibFile)
+    
+    namesInRefs <- colnames(inRefs) %>%
+      grep("\\.\\d+$",.,value = TRUE,invert = TRUE) %>%
+      `[`(1:28) %>%
+      c(.,"COPYRIGHT")
+    
+    refs <- inRefs %>%
+      {if(isPackageBib) (.) %>% dplyr::mutate(package = gsub("R-|\\d{4}","",BIBTEXKEY)) else (.)} %>%
+      tidytext::unnest_tokens("titleWords"
+                              ,TITLE
+                              ,token = "regex"
+                              ,pattern = " "
+                              ,to_lower = FALSE
+                              #,strip_punct = FALSE
+                              ,collapse = FALSE
+                              ) %>%
+      dplyr::mutate(titleWords = gsub("\\{|\\}","",titleWords)
+                    , isCap = grepl(paste0(LETTERS,collapse="|"),titleWords)
+                    , titleWords = if_else(isCap,paste0("{",titleWords,"}"),titleWords)
+                    ) %>%
+      tidyr::nest(data = c(titleWords,isCap)) %>%
+      dplyr::mutate(TITLE = map_chr(data,. %>% dplyr::pull(titleWords) %>% paste0(collapse = " "))
+                    , AUTHOR = map(AUTHOR,~gsub("Microsoft Corporation","{Microsoft Corporation}",.))
+                    , AUTHOR = map(AUTHOR,~gsub("Fortran original by |R port by ","",.))
+                    , AUTHOR = map(AUTHOR, ~gsub("with contributions by","and",.))
+                    , AUTHOR = map(AUTHOR, ~gsub("Â "," ",.))
+                    , YEAR = substr(YEAR,1,4)
+                    ) %>%
+      {if(makeKey) (.) %>%
+          dplyr::mutate(BIBTEXKEY = map2_chr(AUTHOR
+                                       ,YEAR
+                                       ,~paste0(toupper(gsub("[[:punct:]]|\\s","",.x[[1]]))
+                                                , .y
+                                                )
+                                       )
+                        ) else (.)} %>%
+      {if(isPackageBib) (.) %>% dplyr::mutate(TITLE = map2_chr(package,TITLE,~gsub(.x,paste0("{",.x,"}"),.y))) else (.)} %>%
+      dplyr::select(any_of(namesInRefs)) %>%
+      dplyr::filter(!grepl("MEDIA SCREEN AND",CATEGORY))
+    
+    bib2df::df2bib(refs,bibFile)
+    
+    return(refs)
+    
+  }
+  
+
+#------Git----------
 
   # Git add.
   gitadd <- function(dir = getwd()){
@@ -378,55 +451,7 @@
     
   }
   
-# make package bibliography, including tweaks for known package issues.
-  fix_bib <- function(bibFile, makeKey = FALSE, isPackageBib = FALSE) {
-    
-    inRefs <- bib2df::bib2df(bibFile)
-    
-    namesInRefs <- colnames(inRefs) %>%
-      grep("\\.\\d+$",.,value = TRUE,invert = TRUE) %>%
-      `[`(1:28) %>%
-      c(.,"COPYRIGHT")
-    
-    refs <- inRefs %>%
-      {if(isPackageBib) (.) %>% dplyr::mutate(package = gsub("R-|\\d{4}","",BIBTEXKEY)) else (.)} %>%
-      tidytext::unnest_tokens("titleWords"
-                              ,TITLE
-                              ,token = "regex"
-                              ,pattern = " "
-                              ,to_lower = FALSE
-                              #,strip_punct = FALSE
-                              ,collapse = FALSE
-                              ) %>%
-      dplyr::mutate(titleWords = gsub("\\{|\\}","",titleWords)
-                    , isCap = grepl(paste0(LETTERS,collapse="|"),titleWords)
-                    , titleWords = if_else(isCap,paste0("{",titleWords,"}"),titleWords)
-                    ) %>%
-      tidyr::nest(data = c(titleWords,isCap)) %>%
-      dplyr::mutate(TITLE = map_chr(data,. %>% dplyr::pull(titleWords) %>% paste0(collapse = " "))
-                    , AUTHOR = map(AUTHOR,~gsub("Microsoft Corporation","{Microsoft Corporation}",.))
-                    , AUTHOR = map(AUTHOR,~gsub("Fortran original by |R port by ","",.))
-                    , AUTHOR = map(AUTHOR, ~gsub("with contributions by","and",.))
-                    , AUTHOR = map(AUTHOR, ~gsub("Â "," ",.))
-                    , YEAR = substr(YEAR,1,4)
-                    ) %>%
-      {if(makeKey) (.) %>%
-          dplyr::mutate(BIBTEXKEY = map2_chr(AUTHOR
-                                       ,YEAR
-                                       ,~paste0(toupper(gsub("[[:punct:]]|\\s","",.x[[1]]))
-                                                , .y
-                                                )
-                                       )
-                        ) else (.)} %>%
-      {if(isPackageBib) (.) %>% dplyr::mutate(TITLE = map2_chr(package,TITLE,~gsub(.x,paste0("{",.x,"}"),.y))) else (.)} %>%
-      dplyr::select(any_of(namesInRefs)) %>%
-      dplyr::filter(!grepl("MEDIA SCREEN AND",CATEGORY))
-    
-    bib2df::df2bib(refs,bibFile)
-    
-    return(refs)
-    
-  }
+
 
 
 # Are the values within a column unique
@@ -1255,6 +1280,7 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
   }
   
   
+#---------Taxonomy----------
 
 # a function to retrieve taxonomy to accepted names and retrieve taxonomic hierarchy for a df with a column of taxonomic names
   
@@ -1445,6 +1471,8 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
                       , language == "eng"
                       ) %>%
         dplyr::pull(vernacularName) %>%
+        unique() %>%
+        sort() %>%
         paste0(collapse = ", ")
       
     } else if(hasEng) {
@@ -1455,6 +1483,7 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
         dplyr::mutate(common = gsub("^\\s|\\s$|etc","",common)) %>%
         dplyr::distinct(common) %>%
         dplyr::pull(common) %>%
+        unique() %>%
         sort() %>%
         paste0(collapse = ", ")
       
