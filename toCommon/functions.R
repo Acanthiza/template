@@ -1,4 +1,309 @@
 
+#----------Raster----------
+
+  # from https://github.com/m-saenger/geomorphon/blob/master/geomorphon.R
+
+  ##' ...............................................................................
+  ##'  Landform Classification after Jasiewicz and Stepinkski (2013) 
+  ##' ...............................................................................
+  ##'  M. Sänger  10/2019
+  ##' ...............................................................................
+  ##' 
+  ##' Raster data to be on equally spaced grid (e.g. km)
+  ##' Output very sensitive to flatness threshold
+  ##' Function not optmised for performance - run time very long for large data sets
+  
+  geomorph.def <- data.frame(
+    num_lf = 1:10,
+    id_lf = c("PK", "RI", "SH", "SP", "SL", "FS", "FL", "HL", "VL", "PT"),
+    name_en = c("Peak", "Ridge", "Shoulder", "Spur", "Slope", "Footslope", "Flat", "Hollow", "Valley", "Pit"),
+    colour = c("magenta", "red", "orange", "yellow", "grey40",  "grey70", "grey90", "skyblue1", "dodgerblue", "royalblue3"),
+    stringsAsFactors = F
+  )
+  
+  geomorph.lut <- data.frame(
+    V0 = c("FL", "FL", "FL", "SH", "SH", "RI", "RI", "RI", "PK"),
+    V1 = c("FL", "FL", "SH", "SH", "SH", "RI", "RI", "RI", NA),
+    V2 = c("FL", "FS", "SL", "SL", "SP", "SP", "RI", NA, NA),
+    V3 = c("FS", "FS", "SL", "SL", "SL", "SP", NA, NA, NA),
+    V4 = c("FS", "FS", "HL", "SL", "SL", NA, NA, NA, NA),
+    V5 = c("VL", "VL", "HL", "HL", NA, NA, NA, NA, NA),
+    V6 = c("VL", "VL", "VL", NA, NA, NA, NA, NA, NA),
+    V7 = c("VL", "VL", NA, NA, NA, NA, NA, NA, NA),
+    V8 = c("PT", NA, NA, NA, NA, NA, NA, NA, NA)
+  )
+  geomorph.lut <- as.matrix(geomorph.lut)
+  geomorph.lut.num <- matrix(match(geomorph.lut, geomorph.def$id_lf), nrow = nrow(geomorph.lut)) 
+  
+  geomorph <- function(x, flatness.thresh = NA, res = NA, geomorph.lut.num, verbose = F){
+    #' @description Note, that no performance optimisation has been done to this function, yet.
+    #' @author M. Sänger 2018
+    #' @source Jasiewicz, Stepinkski 2013
+    #' @param x vector from raster::focal function
+    #' @param flatness.thresh Flatness threshold in degrees
+    #' @param res resolution, same unit as values in r
+    #' @param geomorph.lut.num look-up table to derive landform class from ternary patterns
+    
+    
+    # Breaks for flatness threshold
+    brks <- c(-Inf, -flatness.thresh, flatness.thresh, Inf)
+    brks.ind <- c(-1, 0, 1)
+    
+    # Create matrix from incoming vector x
+    size = sqrt(length(x))
+    m <- matrix(x, nrow = size)
+    
+    # Distance from central point to edge (number of cells)
+    mid <- ceiling(size/2)
+    
+    # Matrix of all vectors from the central point to the octants
+    oct <- rbind(
+      ne = cbind(mid:size, mid:size),
+      e = cbind(mid:size, mid),
+      se = cbind(mid:size, mid:1),
+      s = cbind(mid, mid:1),
+      sw = cbind(mid:1, mid:1),
+      w = cbind(mid:1, mid),
+      nw = cbind(mid:1, mid:size),
+      n = cbind(mid, mid:size)
+    )
+    
+    # Coordinates and cell distance (sqrt(2) for diagonals)
+    oct.vector <- m[oct]
+    cell.scaling <- rep(c(sqrt(2), 1), 4) # Horizontal cell distance in all 8 directions
+    cell.size <- res * cell.scaling
+    
+    # Matrix octants vs. cell values
+    m1 <- matrix(oct.vector, nrow = 8, byrow = T)
+    
+    # z diff from central point
+    m.diff <-  m1[, -1] - m1[, 1]
+    
+    # Calculate slope angle and transform to degrees
+    m.slope <- atan(m.diff/(cell.size * 1:ncol(m.diff)))
+    m.angle <- m.slope * 180/pi
+    
+    # Calculate zenith and nadir angles for each octant
+    nadir <- 90 + apply(m.angle, 1, min, na.rm = T)
+    zenith <- 90 - apply(m.angle, 1, max, na.rm = T)
+    
+    # Derive ternary pattern
+    ternary.pattern <- brks.ind[findInterval(nadir - zenith, brks)]
+    
+    plus.ind <- length(which(ternary.pattern == 1))
+    neg.ind <- length(which(ternary.pattern == -1))
+    
+    # Look up ternarity pattern and assign landform class
+    geomorph.lut.num[neg.ind + 1, plus.ind + 1]
+    
+  }
+  
+  # Apply focal function
+  geomorph_ras <- function(ras) {
+    
+    outFile <- paste0(names(ras),"_geomorph",".tif")
+    
+    res <- raster::focal(ras
+                         , w = focalWindow
+                         , fun = function(x) geomorph(x
+                                                      , flatnessThresh
+                                                      , res = raster::res(ras)
+                                                      , geomorph.lut.num
+                                                      )
+                         , pad = T
+                         , padValue = NA
+                         )
+    
+    rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
+                     , path("out",outFile)
+                     , type = "Byte"
+                     , colorTables = list(geomorph.def$colour)
+                     , catNames = list(geomorph.def$name_en)
+                     , mvFlag = if(nrow(geomorph.def) < 256) 255 else 65534
+                     )
+    
+    return(res)
+    
+  }
+  
+  # https://rdrr.io/github/gianmarcoalberti/GmAMisc/src/R/landfClass.R
+  # Function seemed to disappear from GmAMisc package between 1.1.0 and 1.1.1
+
+  #' R function for landform classification on the basis on Topographic Position Index
+  #'
+  #' The function allows to perform landform classification on the basis of the Topographic Position Index calculated from an input Digital Terrain Model (RasterLayer class).
+  #'
+  #' The TPI is the difference between the elevation of a given cell and the average elevation of the surrounding cells in a user defined moving window.
+  #' For landform classification, the TPI is first standardized and then thresholded; to isolate certain classes, a slope raster (which is internally worked out) is also needed.\cr
+  #' For details about the implemented classification, see: http://www.jennessent.com/downloads/tpi_documentation_online.pdf.\cr
+  #'
+  #' Two methods are available:\cr
+  #' -the first (devised by Weiss) produces a 6-class landform classification comprising
+  #' -- valley\cr
+  #' -- lower slope\cr
+  #' -- flat slope\cr
+  #' -- middle slope\cr
+  #' -- upper clope\cr
+  #' -- ridge\cr
+  #' -the second (devised by Jennes) produces a 10-class classification comprising
+  #' -- canyons, deeply incised streams\cr
+  #' -- midslope drainages, shallow valleys\cr
+  #' -- upland drainages, headwaters\cr
+  #' -- u-shaped valleys\cr
+  #' -- plains\cr
+  #' -- open slopes\cr
+  #' -- upper slopes, mesas\cr
+  #' -- local ridges, hills in valleys\cr
+  #' -- midslope ridges, small hills\cr
+  #' -- mountain tops, high ridges\cr
+  #' The second classification is based on two TPI that make use of two neighborhoods (moving windows) of different size: a s(mall) n(eighborhood) and a l(arge) n(eighborhood),
+  #' defined by the parameters sn and ln.\cr
+  #'
+  #' Besides rasters representing the different landform classes, the function optionally returns the TPI raster, either un- or standarized.
+  #'
+  #' @param x: input DTM (RasterLayer class).
+  #' @param scale: size (in terms of cells per side) of the neighborhood (moving window) to be used; it must be an odd integer.
+  #' @param sn: if the 10-class classification is selected, this paramenter sets the s(mall) n(eighborhood) to be used.
+  #' @param ln: if the 10-class classification is selected, this paramenter sets the l(arge) n(eighborhood) to be used.
+  #' @param n.classes: "six" or "ten" for a six- or ten-class landform classification.
+  #' @param add.tpi: set to TRUE will return a TPI raster (FALSE is default).
+  #' @param stand.tpi: specifies whether the returned TPI raster will be un- or standardized (FALSE is default).
+  #' @keywords landform
+  #' @export
+  #' @examples
+  #' data(elev) #load the 'elev' raster from the 'raster' package
+  #' landfClass(elev, scale=5, add.tpi=TRUE, stand.tpi=TRUE) #perform the 6-class landform analysis (which is default), and also produce the standardized TPI; a moving window of dimension 5 (in terms of cells per side) is used
+  #' landfClass(elev, sn=5, ln=11, n.classes="ten") #perform the 10-class landform analysis, with a s(mall) n(eighborhood) of size 5 and a l(arge) n(eighborhood) of size 11
+  #'
+  landfClass <- function (x, scale = 3, sn=3, ln=7, n.classes="six") {
+    
+    #define the shape of the moving window used by spatialEco::tpi
+    win = "rectangle"
+    
+    #calculate the slope from the input DTM, to be used for either the six or ten class slope position
+    slp <- raster::terrain(x, opt="slope", unit="degrees", neighbors=8)
+    
+    #calculate the tpi using spatialEco::tpi function
+    tp <- spatialEco::tpi(x, scale=scale, win=win)
+    
+    outFile <- paste0(names(x),"_lsc_",".tif")
+    
+    if (n.classes == "six") {
+      
+      outFile <- gsub("_\\.","_six.",outFile)
+      
+      topo_six_class <- function(tp,slp) {
+        
+        ifelse(tp <= -1
+               , 1
+               , ifelse(tp > -1 & tp <= -0.5
+                        , 2
+                        , ifelse(tp > -0.5 & tp < 0.5 & slp <= 5
+                                 , 3
+                                 , ifelse(tp > -0.5 & tp < 0.5 & slp > 5
+                                          , 4
+                                          , ifelse(tp > 0.5 & tp <= 1
+                                                   , 5
+                                                   , ifelse(tp > 1
+                                                            , 6
+                                                            , NA
+                                                            )
+                                                   )
+                                          )
+                                 )
+                        )
+               )
+        
+        }
+      
+      s <- stack(tp,slp)
+      
+      res <- overlay(s, fun = topo_six_class, forcefun = TRUE)
+      
+      lscCol <- tibble(id = 1:6
+                      , colour = terrain.colors(6)
+                      , attribute = c("valley","lower slope","flat slope","middle slope","upper slope","ridge")
+                      )
+      
+      rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
+                       , path("out",outFile)
+                       , type = if(nrow(lscCol) < 256) "Byte" else"UInt16"
+                       , colorTables = list(lscCol$colour)
+                       , catNames = list(lscCol$attribute)
+                       , mvFlag = if(nrow(lscCol) < 256) 255 else 65534
+                       )
+      
+    } else {
+      
+      outFile <- gsub("_\\.","_ten.",outFile)
+      
+      topo_ten_class <- function(sn,ln,slp) {
+        
+        ifelse(sn <= -1 & ln <= -1
+               , 1
+               , ifelse(sn <= -1 & ln > -1 & ln < 1
+                        , 2
+                        , ifelse(sn <= -1 & ln >= 1
+                                 , 3
+                                 , ifelse(sn > -1 & sn < 1 & ln <=-1
+                                          , 4
+                                          , ifelse(sn > -1 & sn < 1 & ln > -1 & ln < 1 & slp <= 5
+                                                   , 5
+                                                   , ifelse(sn > -1 & sn < 1 & ln > -1 & ln < 1 & slp > 5
+                                                            , 6
+                                                            , ifelse(sn > -1 & sn < 1 & ln >= 1
+                                                                     , 7
+                                                                    , ifelse(sn >= 1 & ln <= -1
+                                                                             , 8
+                                                                             , ifelse(sn >= 1 & ln > -1 & ln < 1
+                                                                                      , 9
+                                                                                      , ifelse(sn >= 1 & ln >=1
+                                                                                               , 10
+                                                                                               , NA
+                                                                                               )
+                                                                                      )
+                                                                             )
+                                                                     )
+                                                            )
+                                                   )
+                                          )
+                                 )
+                        )
+               )
+        
+        }
+      
+      #calculate two standardized tpi, one with small neighbour, one with large neighbour
+      sn <- spatialEco::tpi(x, scale=sn, win=win, normalize=TRUE)
+      ln <- spatialEco::tpi(x, scale=ln, win=win, normalize=TRUE)
+      
+      s <- stack(sn,ln,slp)
+      
+      res <- overlay(s, fun = topo_ten_class, forcefun = TRUE)
+      
+      lscCol <- tibble(id = 1:10
+                       , colour = terrain.colors(10)
+                       , attribute = c("canyon","midslope drainage","upland drainage","u-shaped valley","plains"
+                                       , "open slopes", "upper slopes", "local ridges", "midslopes ridges", "mountain tops"
+                                       )
+                       )
+      
+      rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
+                       , path("out",outFile)
+                       , type = if(nrow(lscCol) < 256) "Byte" else"UInt16"
+                       , colorTables = list(lscCol$colour)
+                       , catNames = list(lscCol$attribute)
+                       , mvFlag = if(nrow(lscCol) < 256) 255 else 65534
+                       )
+      
+    }
+    
+    return(res)
+    
+  }
+
+
+
 #------Clustering---------
 
   make_clusters <- function(data
@@ -186,11 +491,13 @@
                               ) {
     
     df <- diagnosticDf %>%
-      {if(displayAll) (.) else (.) %>% dplyr::filter(weight)}
+      {if(displayAll) (.) else (.) %>% dplyr::filter(weight)} %>%
+      dplyr::mutate(across(where(is.factor),factor)) %>%
+      dplyr::filter(!is.na(value))
     
     ggplot(df
            ,aes(groups
-                , value
+                , scale
                 , colour = combo
                 , alpha = if(displayAll) weight else NULL
                 , label = groups
@@ -198,7 +505,7 @@
                 )
            ) +
       geom_point() +
-      geom_text_repel(data = df %>%
+      ggrepel::geom_text_repel(data = df %>%
                         dplyr::filter(best)
                       , size = 2
                       , show.legend = FALSE
@@ -287,6 +594,67 @@
 
 
   
+#--------GIS----------
+  
+  # Calculate area in hectares of levels within a raster or polygon within another polygon boundary
+  
+  calc_poly_areas <- function(boundary,toSummarise) {
+    
+    boundary <- st_make_valid(boundary) %>%
+      st_transform(crs = 8059)
+    
+    if(grepl("raster",tolower(class(toSummarise)))) {
+      
+      res <- raster::extract(toSummarise
+                             ,boundary
+                             ,df = TRUE
+      ) %>%
+        as_tibble() %>%
+        dplyr::select(ID = 2) %>%
+        dplyr::count(ID, name = "cells") %>%
+        dplyr::mutate(hectares = res(toSummarise)[[1]]*res(toSummarise)[[2]]*cells/10000
+                      , prop = hectares/(as.numeric(st_area(boundary))/10000)
+                      , per = 100*prop
+        ) %>%
+        dplyr::left_join(ecosystemsDesc, by = c("ID" = "rclNum"))
+      
+    }
+    
+    if("sf" %in% class(toSummarise)) {
+      
+      toSummarise <- st_make_valid(toSummarise) %>%
+        st_transform(crs = 8059)
+      
+      subPolys <- st_intersection(toSummarise,boundary)
+      
+      res <- subPolys %>%
+        dplyr::mutate(hectares = as.numeric(st_area(geometry))/10000) %>%
+        st_set_geometry(NULL) %>%
+        dplyr::filter(!is.na(SA_VEG_ID)) %>%
+        dplyr::group_by(SA_VEG_ID,VEG_ID,VG_GEN_STR,VG_STR_FOR,BROAD_DESC,DOMSP_GENS,DETSP_DOM,ALLIANCE,DOMSP_LAY
+                        , SA_VEG_DES
+        ) %>%
+        dplyr::summarise(hectares = sum(hectares)) %>%
+        dplyr::ungroup() %>%
+        dplyr::mutate(prop = hectares/(as.numeric(st_area(boundary))/10000))
+      
+    }
+    
+    return(res)
+    
+  }
+  
+  # add coordinate columns to a sf point object
+  # https://github.com/r-spatial/sf/issues/231
+  sfc_as_cols <- function(x, names = c("x","y")) {
+    stopifnot(inherits(x,"sf") && inherits(sf::st_geometry(x),"sfc_POINT"))
+    ret <- sf::st_coordinates(x)
+    ret <- tibble::as_tibble(ret)
+    stopifnot(length(names) == ncol(ret))
+    x <- x[ , !names(x) %in% names]
+    ret <- setNames(ret,names)
+    dplyr::bind_cols(x,ret)
+  }
 
 
 # Convert deg°min'sec to decimal degrees
@@ -550,6 +918,73 @@ unscale_data <- function(scaledData) {
     
     return(x[inds,])
   }
+  
+  
+#--------Random Forests----------
+  
+  # Iteratively add trees to a random forest with tibble output
+  add_row_rf_simple <- function(resDf,rowGrow = 499) {
+    
+    lastRf <- resDf$rf[nrow(resDf)]
+    
+    resDf %>%
+      dplyr::bind_rows(tibble(start = Sys.time(), run = max(resDf$run) + 1) %>%
+                         dplyr::mutate(trees = max(resDf$trees) + rowGrow
+                                       , rf = list(grow(lastRf[[1]],rowGrow))
+                                       #, rfProbCell = map(rf,rf_prob_cell)
+                                       #, meanVotesCell = map_dbl(rfProbCell,~mean(.$votes))
+                                       #, rfProbClass = map(rfProbCell,rf_prob_class)
+                                       #, meanVotesClass = map_dbl(rfProbClass,~mean(.$votes))
+                                       , kappaPrevRf = map_dbl(rf
+                                                                ,~caret::confusionMatrix(.$predicted
+                                                                                         ,lastRf[[1]]$predicted
+                                                                                         )$overall[["Kappa"]]
+                                                                )
+                                       , end =  Sys.time()
+                                       , seconds = difftime(end,start, units = "secs")
+                                       )
+                       )
+    
+  }
+  
+  rf_simple <- function(trees = 99) {
+    
+    # Assumes envData exists and is ready to go
+    randomForest::randomForest(x = envData[,which(names(envData) %in% envNames)]
+                                 , y = envData %>% dplyr::pull(cluster)
+                                 , ntree = trees
+                                 , importance = TRUE
+                                 , mtry = useMtry
+                                 )
+    
+    }
+  
+  # Get some rf results
+  rf_prob_cell <- function(rf
+                     , envDf = predSample
+                     , classes = levels(envData$cluster)
+                     , targetVotes = 0.5
+                     ) {
+    
+    predict(rf,envDf,type = "prob") %>%
+      as_tibble() %>%
+      dplyr::mutate(id = row_number()
+                    , across(where(is.matrix),as.numeric)
+                    ) %>%
+      tidyr::pivot_longer(any_of(classes), names_to = "predCluster", values_to = "votes") %>%
+      dplyr::group_by(id) %>%
+      dplyr::slice(which.max(votes))
+    
+  }
+  
+  rf_prob_class <- function(rfProbCells) {
+    
+    rfProbCells %>%
+      dplyr::group_by(predCluster) %>%
+      dplyr::summarise(votes = mean(votes)) %>%
+      dplyr::ungroup()
+    
+  }
 
 # A function to run random forest over a df with first column 'cluster' and other columns explanatory
 
@@ -695,6 +1130,31 @@ unscale_data <- function(scaledData) {
     
   }
     
+  # Generate predictions with oob/cv probabilities
+  
+  caret_pred <- function(trainObj,data,idCol = "cell", groupCol = "cluster") {
+    
+    rfType <- class(trainObj)
+    
+    if("randomForest" %in% rfType)  mod <- trainObj
+    if("randomForest" %in% class(trainObj$finalModel)) mod <- trainObj$finalModel
+    
+    stopifnot(exists("mod"))
+    
+    tibble(cell = data %>% dplyr::pull(!!ensym(idCol))
+           , cluster = data %>% dplyr::pull(!!ensym(groupCol))
+           , predCluster = mod$predicted
+           ) %>%
+      dplyr::bind_cols(as_tibble(mod$votes) %>%
+                         dplyr::mutate(across(.fns = as.numeric))
+                       ) %>%
+      dplyr::mutate(across(where(is.matrix),as.numeric)) %>%
+      dplyr::mutate(predCluster = factor(predCluster, levels = levels(data %>% dplyr::pull(!!ensym(groupCol)))))
+    
+  }
+  
+
+#---------Data access-----------
     
 # Function to get data out of 32 bit MS Access from 64 bit R
 # see https://stackoverflow.com/questions/13070706/how-to-connect-r-with-access-database-in-64-bit-window
@@ -1116,6 +1576,9 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
     chSqRes <- list(chSq=chSq,chSqVis=chSqVis,chSqPlot=chSqPlot,chSqText=chSqText,doChSqPlot=doChSqPlot)
     
   }
+  
+  
+#-------Miscellaneous--------
   
 # function to read in previously saved rds
   
