@@ -5,8 +5,10 @@
 
   prop_mem <- function() {
     
-    parse_number(paste0(system2("wmic", args =  "OS get FreePhysicalMemory /Value", stdout = TRUE),collapse = "_")) /
-      parse_number(paste0(system2("wmic", args =  "OS get TotalVisibleMemorySize /Value", stdout = TRUE),collapse = "_"))
+    total <- parse_number(paste0(system2("wmic", args =  "OS get TotalVirtualMemorySize /Value", stdout = TRUE),collapse = "_"))
+    free <- parse_number(paste0(system2("wmic", args =  "OS get FreeVirtualMemory /Value", stdout = TRUE),collapse = "_"))
+    
+    (total-free)/total
     
   }
   
