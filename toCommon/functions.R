@@ -1,4 +1,26 @@
 
+#-------System---------
+
+  # https://stackoverflow.com/questions/27788968/how-would-one-check-the-system-memory-available-using-r-on-a-windows-machine
+
+  prop_mem <- function() {
+    
+    parse_number(paste0(system2("wmic", args =  "OS get FreePhysicalMemory /Value", stdout = TRUE),collapse = "_")) /
+      parse_number(paste0(system2("wmic", args =  "OS get TotalVisibleMemorySize /Value", stdout = TRUE),collapse = "_"))
+    
+  }
+  
+  prop_CPU <- function() {
+    
+    a <- system("wmic path Win32_PerfFormattedData_PerfProc_Process get Name,PercentProcessorTime", intern = TRUE)
+    df <- as_tibble(do.call(rbind, lapply(strsplit(a, " "), function(x) {x <- x[x != ""];data.frame(process = x[1], cpu = x[2])}))) %>%
+      dplyr::mutate(cpu = as.numeric(cpu))
+    
+    sum(df$cpu[!grepl("Idle|Total",df$process)],na.rm = TRUE)/(df %>% dplyr::filter(grepl("Total",process)) %>% dplyr::pull(cpu))
+    
+  }
+
+
 #----------Raster----------
 
   # from https://github.com/m-saenger/geomorphon/blob/master/geomorphon.R
@@ -99,30 +121,40 @@
   }
   
   # Apply focal function
-  geomorph_ras <- function(ras) {
+  geomorph_ras <- function(ras, outFile = NULL, doNew = TRUE) {
     
-    outFile <- paste0(names(ras),"_geomorph",".tif")
+    saveFile <- if(is.null(outFile)) {
+      
+      path("out",paste0(names(ras),"_geomorph",".tif"))
+      
+    } else outFile
     
-    res <- raster::focal(ras
-                         , w = focalWindow
-                         , fun = function(x) geomorph(x
-                                                      , flatnessThresh
-                                                      , res = raster::res(ras)
-                                                      , geomorph.lut.num
-                                                      )
-                         , pad = T
-                         , padValue = NA
-                         )
+    if(!doNew) if(!file.exists(saveFile)) doNew <- TRUE
     
-    rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
-                     , path("out",outFile)
-                     , type = "Byte"
-                     , colorTables = list(geomorph.def$colour)
-                     , catNames = list(geomorph.def$name_en)
-                     , mvFlag = if(nrow(geomorph.def) < 256) 255 else 65534
-                     )
+    if(doNew) {
+      
+      res <- raster::focal(ras
+                           , w = focalWindow
+                           , fun = function(x) geomorph(x
+                                                        , flatnessThresh
+                                                        , res = raster::res(ras)
+                                                        , geomorph.lut.num
+                                                        )
+                           , pad = T
+                           , padValue = NA
+                           )
+      
+      rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
+                       , saveFile
+                       , type = "Byte"
+                       , colorTables = list(geomorph.def$colour)
+                       , catNames = list(geomorph.def$name_en)
+                       , mvFlag = if(nrow(geomorph.def) < 256) 255 else 65534
+                       )
+      
+    }
     
-    return(res)
+    raster(saveFile)
     
   }
   
@@ -175,130 +207,148 @@
   #' landfClass(elev, scale=5, add.tpi=TRUE, stand.tpi=TRUE) #perform the 6-class landform analysis (which is default), and also produce the standardized TPI; a moving window of dimension 5 (in terms of cells per side) is used
   #' landfClass(elev, sn=5, ln=11, n.classes="ten") #perform the 10-class landform analysis, with a s(mall) n(eighborhood) of size 5 and a l(arge) n(eighborhood) of size 11
   #'
-  landfClass <- function (x, scale = 3, sn=3, ln=7, n.classes="six") {
+  landfClass <- function (x, outFile = NULL, doNew = TRUE, outDir = "out", sn = 3, ln = 7, n.classes="six") {
     
     #define the shape of the moving window used by spatialEco::tpi
     win = "rectangle"
     
     #calculate the slope from the input DTM, to be used for either the six or ten class slope position
-    slp <- raster::terrain(x, opt="slope", unit="degrees", neighbors=8)
+    slp <- raster::terrain(x, opt="slope", unit="degrees", neighbors = sn*sn-1)
     
     #calculate the tpi using spatialEco::tpi function
-    tp <- spatialEco::tpi(x, scale=scale, win=win)
+    tp <- spatialEco::tpi(x, scale = sn, win = win)
     
-    outFile <- paste0(names(x),"_lsc_",".tif")
+    saveFile <- if(is.null(outFile)) path(outDir,paste0(names(x),"_lsc.tif")) else outFile
+    
+    saveFile <- if(n.classes == "six") gsub("\\.tif","_six.tif",saveFile) else gsub("\\.tif","_ten.tif",saveFile)
     
     if (n.classes == "six") {
       
-      outFile <- gsub("_\\.","_six.",outFile)
-      
-      topo_six_class <- function(tp,slp) {
+      if(!doNew) {
         
-        ifelse(tp <= -1
-               , 1
-               , ifelse(tp > -1 & tp <= -0.5
-                        , 2
-                        , ifelse(tp > -0.5 & tp < 0.5 & slp <= 5
-                                 , 3
-                                 , ifelse(tp > -0.5 & tp < 0.5 & slp > 5
-                                          , 4
-                                          , ifelse(tp > 0.5 & tp <= 1
-                                                   , 5
-                                                   , ifelse(tp > 1
-                                                            , 6
-                                                            , NA
-                                                            )
-                                                   )
-                                          )
-                                 )
+        if(!file.exists(saveFile)) doNew <- TRUE
+        
+      }
+      
+      if(doNew) {
+        
+        topo_six_class <- function(tp,slp) {
+        
+          ifelse(tp <= -1
+                 , 1
+                 , ifelse(tp > -1 & tp <= -0.5
+                          , 2
+                          , ifelse(tp > -0.5 & tp < 0.5 & slp <= 5
+                                   , 3
+                                   , ifelse(tp > -0.5 & tp < 0.5 & slp > 5
+                                            , 4
+                                            , ifelse(tp > 0.5 & tp <= 1
+                                                     , 5
+                                                     , ifelse(tp > 1
+                                                              , 6
+                                                              , NA
+                                                              )
+                                                     )
+                                            )
+                                   )
+                          )
+                 )
+          
+          }
+        
+        s <- stack(tp,slp)
+        
+        res <- overlay(s, fun = topo_six_class, forcefun = TRUE)
+        
+        lscCol <- tibble(id = 1:6
+                        , colour = terrain.colors(6)
+                        , attribute = c("valley","lower slope","flat slope","middle slope","upper slope","ridge")
                         )
-               )
         
+        rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
+                         , path(saveFile)
+                         , type = if(nrow(lscCol) < 256) "Byte" else"UInt16"
+                         , colorTables = list(lscCol$colour)
+                         , catNames = list(lscCol$attribute)
+                         , mvFlag = if(nrow(lscCol) < 256) 255 else 65534
+                         )
+          
         }
-      
-      s <- stack(tp,slp)
-      
-      res <- overlay(s, fun = topo_six_class, forcefun = TRUE)
-      
-      lscCol <- tibble(id = 1:6
-                      , colour = terrain.colors(6)
-                      , attribute = c("valley","lower slope","flat slope","middle slope","upper slope","ridge")
-                      )
-      
-      rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
-                       , path("out",outFile)
-                       , type = if(nrow(lscCol) < 256) "Byte" else"UInt16"
-                       , colorTables = list(lscCol$colour)
-                       , catNames = list(lscCol$attribute)
-                       , mvFlag = if(nrow(lscCol) < 256) 255 else 65534
-                       )
       
     } else {
       
-      outFile <- gsub("_\\.","_ten.",outFile)
-      
-      topo_ten_class <- function(sn,ln,slp) {
+      if(!doNew) {
         
-        ifelse(sn <= -1 & ln <= -1
-               , 1
-               , ifelse(sn <= -1 & ln > -1 & ln < 1
-                        , 2
-                        , ifelse(sn <= -1 & ln >= 1
-                                 , 3
-                                 , ifelse(sn > -1 & sn < 1 & ln <=-1
-                                          , 4
-                                          , ifelse(sn > -1 & sn < 1 & ln > -1 & ln < 1 & slp <= 5
-                                                   , 5
-                                                   , ifelse(sn > -1 & sn < 1 & ln > -1 & ln < 1 & slp > 5
-                                                            , 6
-                                                            , ifelse(sn > -1 & sn < 1 & ln >= 1
-                                                                     , 7
-                                                                    , ifelse(sn >= 1 & ln <= -1
-                                                                             , 8
-                                                                             , ifelse(sn >= 1 & ln > -1 & ln < 1
-                                                                                      , 9
-                                                                                      , ifelse(sn >= 1 & ln >=1
-                                                                                               , 10
-                                                                                               , NA
-                                                                                               )
-                                                                                      )
-                                                                             )
-                                                                     )
-                                                            )
-                                                   )
-                                          )
-                                 )
-                        )
-               )
+        if(!file.exists(saveFile)) doNew <- TRUE
+        
+      }
+      
+      if(doNew) {
+      
+        topo_ten_class <- function(sn,ln,slp) {
+          
+          ifelse(sn <= -1 & ln <= -1
+                 , 1
+                 , ifelse(sn <= -1 & ln > -1 & ln < 1
+                          , 2
+                          , ifelse(sn <= -1 & ln >= 1
+                                   , 3
+                                   , ifelse(sn > -1 & sn < 1 & ln <=-1
+                                            , 4
+                                            , ifelse(sn > -1 & sn < 1 & ln > -1 & ln < 1 & slp <= 5
+                                                     , 5
+                                                     , ifelse(sn > -1 & sn < 1 & ln > -1 & ln < 1 & slp > 5
+                                                              , 6
+                                                              , ifelse(sn > -1 & sn < 1 & ln >= 1
+                                                                       , 7
+                                                                      , ifelse(sn >= 1 & ln <= -1
+                                                                               , 8
+                                                                               , ifelse(sn >= 1 & ln > -1 & ln < 1
+                                                                                        , 9
+                                                                                        , ifelse(sn >= 1 & ln >=1
+                                                                                                 , 10
+                                                                                                 , NA
+                                                                                                 )
+                                                                                        )
+                                                                               )
+                                                                       )
+                                                              )
+                                                     )
+                                            )
+                                   )
+                          )
+                 )
+          
+          }
+        
+        #calculate two standardized tpi, one with small neighbour, one with large neighbour
+        sn <- spatialEco::tpi(x, scale=sn, win=win, normalize=TRUE)
+        ln <- spatialEco::tpi(x, scale=ln, win=win, normalize=TRUE)
+        
+        s <- stack(sn,ln,slp)
+        
+        res <- overlay(s, fun = topo_ten_class, forcefun = TRUE)
+        
+        lscCol <- tibble(id = 1:10
+                         , colour = terrain.colors(10)
+                         , attribute = c("canyon","midslope drainage","upland drainage","u-shaped valley","plains"
+                                         , "open slopes", "upper slopes", "local ridges", "midslopes ridges", "mountain tops"
+                                         )
+                         )
+        
+        rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
+                         , path(saveFile)
+                         , type = if(nrow(lscCol) < 256) "Byte" else"UInt16"
+                         , colorTables = list(lscCol$colour)
+                         , catNames = list(lscCol$attribute)
+                         , mvFlag = if(nrow(lscCol) < 256) 255 else 65534
+                         )
         
         }
       
-      #calculate two standardized tpi, one with small neighbour, one with large neighbour
-      sn <- spatialEco::tpi(x, scale=sn, win=win, normalize=TRUE)
-      ln <- spatialEco::tpi(x, scale=ln, win=win, normalize=TRUE)
-      
-      s <- stack(sn,ln,slp)
-      
-      res <- overlay(s, fun = topo_ten_class, forcefun = TRUE)
-      
-      lscCol <- tibble(id = 1:10
-                       , colour = terrain.colors(10)
-                       , attribute = c("canyon","midslope drainage","upland drainage","u-shaped valley","plains"
-                                       , "open slopes", "upper slopes", "local ridges", "midslopes ridges", "mountain tops"
-                                       )
-                       )
-      
-      rgdal::writeGDAL(as(res, "SpatialGridDataFrame")
-                       , path("out",outFile)
-                       , type = if(nrow(lscCol) < 256) "Byte" else"UInt16"
-                       , colorTables = list(lscCol$colour)
-                       , catNames = list(lscCol$attribute)
-                       , mvFlag = if(nrow(lscCol) < 256) 255 else 65534
-                       )
-      
     }
     
-    return(res)
+    raster(saveFile)
     
   }
 
@@ -376,13 +426,7 @@
            )
     
   }
-  
-  
-  clustering_explore <- function(clusters)
-    
-    
-    
-  
+   
 
   # Make a cluster data frame (now prefer to use make_clusters)
   make_cluster_df <- function(rawClusters,siteIDsDf) {
@@ -928,22 +972,32 @@ unscale_data <- function(scaledData) {
     lastRf <- resDf$rf[nrow(resDf)]
     
     resDf %>%
-      dplyr::bind_rows(tibble(start = Sys.time(), run = max(resDf$run) + 1) %>%
+      dplyr::bind_rows(tibble(start = Sys.time()
+                              , run = max(resDf$run) + 1
+                              ) %>%
                          dplyr::mutate(trees = max(resDf$trees) + rowGrow
                                        , rf = list(grow(lastRf[[1]],rowGrow))
                                        #, rfProbCell = map(rf,rf_prob_cell)
                                        #, meanVotesCell = map_dbl(rfProbCell,~mean(.$votes))
                                        #, rfProbClass = map(rfProbCell,rf_prob_class)
                                        #, meanVotesClass = map_dbl(rfProbClass,~mean(.$votes))
+                                       , deltaPrev = map_dbl(rf
+                                                             , ~tibble(last = .$predicted,prev = lastRf[[1]]$predicted) %>%
+                                                               dplyr::mutate(rows = nrow(.)
+                                                                             , same = last == prev
+                                                                             ) %>%
+                                                               dplyr::summarise(same = sum(same)/mean(rows)) %>%
+                                                               dplyr::pull(same)
+                                                             )
                                        , kappaPrevRf = map_dbl(rf
                                                                 ,~caret::confusionMatrix(.$predicted
                                                                                          ,lastRf[[1]]$predicted
                                                                                          )$overall[["Kappa"]]
                                                                 )
-                                       , end =  Sys.time()
-                                       , seconds = difftime(end,start, units = "secs")
+                                       , end = Sys.time()
                                        )
-                       )
+                       ) %>%
+      dplyr::mutate(seconds = lag(seconds, default = 0) + as.numeric(difftime(end,start, units = "secs")))
     
   }
   
@@ -1796,7 +1850,7 @@ ah2sp <- function(x, increment=360, rnd=10, proj4string=CRS(as.character(NA)),to
       dplyr::filter(!grepl("BOLD:.*\\d{4}",originalName)
                     , !is.na(originalName)
                     ) %>%
-      dplyr::mutate(searchedName = gsub("dead |\\s*\\(.*\\).*|\\'|\\?| spp\\.| sp\\.| ssp\\.| var\\.| ex| [A-Z].*|#|\\s^"
+      dplyr::mutate(searchedName = gsub("\\s*\\(.*\\).*|\\'|\\?| spp\\.| sp\\.| ssp\\.| var\\.| ex| [A-Z].*|#|\\s^"
                                 ,""
                                 ,originalName
                                 )
